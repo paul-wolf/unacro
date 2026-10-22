@@ -47,6 +47,15 @@ npm run tauri build    # build installers (.deb, .rpm, .AppImage on Linux; .app/
 
 You can also open files from the command line: `unacro a.pdf b.pdf`.
 
+### Opening PDFs from Finder or your file manager
+
+Installed builds register Unacro as an app that can open PDFs. Double-clicking, "Open With → Unacro" and dropping files on the app icon all open the PDF as a new tab in the running window. If Unacro isn't running, it starts. Unacro registers as an *alternate* PDF app, so it won't take over from your current default. To make it the default:
+
+- **macOS:** select any PDF in Finder, press `⌘I`, choose Unacro under "Open with", then click "Change All…".
+- **Linux:** right-click a PDF, choose "Open With…" and pick Unacro (most file managers offer a "set as default" option there), or run `xdg-mime default unacro.desktop application/pdf`.
+
+File associations only exist in an installed build (`npm run tauri build`), not in `npm run tauri dev`. On macOS, copy `src-tauri/target/release/bundle/macos/Unacro.app` to Applications.
+
 For quick UI work without the desktop shell, `npm run dev` serves the same UI at http://localhost:1420 in a browser (Chromium recommended). In the browser, Save works through the browser's file picker or falls back to a download.
 
 Tests:
@@ -69,7 +78,7 @@ The UI is plain TypeScript with no framework.
 - `src/core/`: the document model, PDF building (`build.ts`) and PDF-to-Markdown (`markdown.ts`). No DOM, unit-tested in Node.
 - `src/app.ts`: tabs, sidebar, viewer, signatures, menus, keyboard.
 - `src/platform.ts`: everything that touches the operating system (desktop vs. browser).
-- `src-tauri/`: the native side. It only reads files, writes them atomically, and passes on command-line arguments.
+- `src-tauri/`: the native side. It only reads files, writes them atomically, and passes on files the operating system asks it to open.
 
 Edits are never applied to your file directly. A document is a list of page references (source file + page number + rotation + signatures). Saving builds a new PDF from that list and writes it to a temporary file that is then renamed over the target. When most pages come from one file, that file is used as the base, so its bookmarks, form fields and metadata are kept.
 

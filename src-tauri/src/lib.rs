@@ -1,12 +1,14 @@
 //! Unacro's native side is deliberately tiny: read a file, write a file safely,
-//! and report which files were passed on the command line. Everything else
+//! and pass on PDFs the operating system asks it to open. Everything else
 //! happens in the web UI.
 
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use tauri::ipc::{InvokeBody, Request, Response};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 /// Read a whole file and return its bytes without JSON encoding.
 #[tauri::command]
@@ -81,26 +83,108 @@ fn percent_decode(s: &str) -> Result<String, String> {
     String::from_utf8(out).map_err(|e| e.to_string())
 }
 
-/// PDF files given on the command line, e.g. `unacro a.pdf b.pdf`.
-#[tauri::command]
-fn initial_paths() -> Vec<String> {
-    std::env::args()
-        .skip(1)
+// ------------------------------------------------------------------ opening files
+//
+// Files reach Unacro in three ways:
+//  - command-line arguments when it starts (`unacro a.pdf b.pdf`, or a double-click
+//    on Linux/Windows when Unacro isn't running yet)
+//  - a second launch while Unacro is running (double-click on Linux/Windows): the
+//    single-instance plugin hands its arguments to the running app, which opens
+//    them as tabs, and the second process exits
+//  - macOS "open document" events (double-click, Open With, drop on the Dock icon)
+//
+// Files can arrive before the UI has loaded, so they wait in a queue until the UI
+// asks for them with `initial_paths`. After that they are sent as "open-files" events.
+
+#[derive(Default)]
+struct OpenQueue {
+    ui_ready: bool,
+    pending: Vec<String>,
+}
+
+/// Keep existing files from a list of arguments, resolved against `cwd`.
+fn file_args(args: impl IntoIterator<Item = String>, cwd: &Path) -> Vec<String> {
+    args.into_iter()
         .filter(|a| !a.starts_with('-'))
-        .filter_map(|a| fs::canonicalize(&a).ok())
+        .map(|a| {
+            let p = PathBuf::from(&a);
+            if p.is_absolute() { p } else { cwd.join(p) }
+        })
+        .filter_map(|p| fs::canonicalize(p).ok())
         .filter(|p| p.is_file())
         .map(|p| p.to_string_lossy().into_owned())
         .collect()
 }
 
+fn focus_main(app: &AppHandle) {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.unminimize();
+        let _ = w.show();
+        let _ = w.set_focus();
+    }
+}
+
+fn deliver(app: &AppHandle, paths: Vec<String>) {
+    if !paths.is_empty() {
+        let queue = app.state::<Mutex<OpenQueue>>();
+        let mut q = queue.lock().unwrap();
+        if q.ui_ready {
+            let _ = app.emit("open-files", paths);
+        } else {
+            q.pending.extend(paths);
+        }
+    }
+    focus_main(app);
+}
+
+/// Files to open at startup: command-line arguments plus anything the OS sent
+/// before the UI was ready. From now on, files are sent as events.
+#[tauri::command]
+fn initial_paths(queue: State<'_, Mutex<OpenQueue>>) -> Vec<String> {
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let mut paths = file_args(std::env::args().skip(1), &cwd);
+    let mut q = queue.lock().unwrap();
+    // A reload of the UI must not reopen the command-line files.
+    if q.ui_ready {
+        paths.clear();
+    }
+    q.ui_ready = true;
+    paths.append(&mut q.pending);
+    paths
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let mut builder = tauri::Builder::default();
+
+    // Must be the first plugin registered.
+    #[cfg(desktop)]
+    {
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, cwd| {
+            let paths = file_args(argv.into_iter().skip(1), Path::new(&cwd));
+            deliver(app, paths);
+        }));
+    }
+
+    builder
+        .manage(Mutex::new(OpenQueue::default()))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![read_file, write_file, initial_paths])
-        .run(tauri::generate_context!())
-        .expect("error while running Unacro");
+        .build(tauri::generate_context!())
+        .expect("error while building Unacro")
+        .run(|_app, _event| {
+            #[cfg(any(target_os = "macos", target_os = "ios"))]
+            if let tauri::RunEvent::Opened { urls } = _event {
+                let paths = urls
+                    .into_iter()
+                    .filter_map(|u| u.to_file_path().ok())
+                    .filter(|p| p.is_file())
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .collect();
+                deliver(_app, paths);
+            }
+        });
 }
 
 #[cfg(test)]
@@ -111,6 +195,20 @@ mod tests {
     fn decodes_paths() {
         assert_eq!(percent_decode("%2Fhome%2Fp%C3%A5%20x.pdf").unwrap(), "/home/på x.pdf");
         assert_eq!(percent_decode("plain").unwrap(), "plain");
+    }
+
+    #[test]
+    fn file_args_resolves_relative_paths_and_skips_flags() {
+        let dir = std::env::temp_dir().join(format!("unacro-args-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("a.pdf"), b"%PDF").unwrap();
+        let got = file_args(
+            vec!["--flag".into(), "a.pdf".into(), "missing.pdf".into(), "-psn_0_123".into()],
+            &dir,
+        );
+        let want = fs::canonicalize(dir.join("a.pdf")).unwrap().to_string_lossy().into_owned();
+        assert_eq!(got, vec![want]);
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

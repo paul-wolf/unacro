@@ -39,7 +39,26 @@
       "icons/icon.ico"
     ],
     "fileAssociations": [
-      { "ext": ["pdf"], "mimeType": "application/pdf", "name": "PDF document", "role": "Editor" }
-    ]
+      {
+        "ext": [
+          "pdf"
+        ],
+        "mimeType": "application/pdf",
+        "contentTypes": [
+          "com.adobe.pdf"
+        ],
+        "name": "PDF document",
+        "role": "Editor",
+        "rank": "Alternate"
+      }
+    ],
+    "linux": {
+      "deb": {
+        "desktopTemplate": "linux/unacro.desktop"
+      },
+      "rpm": {
+        "desktopTemplate": "linux/unacro.desktop"
+      }
+    }
   }
 }

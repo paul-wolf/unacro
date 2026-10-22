@@ -26,6 +26,7 @@ Preview's file handling is the main frustration Unacro exists to fix. These are 
 - **Saves are atomic.** Unacro writes to a temporary file and then renames it over the original. A crash mid-save can't leave you with half a PDF.
 - **Always know where a file is.** The full path is visible (title bar and tab tooltip), and "Show in Folder" opens your file manager on it.
 - **Many documents, one window.** Open documents are tabs in a single window, not a pile of windows. You can switch quickly, close others, and use a recent-files list. Thirty open PDFs should feel no heavier than three: pages render only when they're on screen.
+- **Opening from the file manager adds a tab.** Double-clicking a PDF, "Open With", or dropping it on the app icon opens it in the running window. It never starts a second copy of the app.
 - **Drag and drop works the obvious way.** Drop a PDF on the tab bar to open it. Drop it into the thumbnail sidebar to insert its pages at that spot.
 
 ## Principles

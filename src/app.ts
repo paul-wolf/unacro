@@ -112,8 +112,15 @@ export class App {
     this.platform.onCloseRequested(() => this.confirmQuit());
     this.render();
 
-    const initial = await this.platform.initialPaths().catch(() => []);
-    for (const p of initial) await this.openPath(p);
+    // Listen before asking for the startup files, so nothing sent in between is missed.
+    await this.platform.onOpenPaths((paths) => this.openPaths(paths));
+    this.openPaths(await this.platform.initialPaths().catch(() => [] as string[]));
+  }
+
+  /** Open files one after another, so the same file opened twice quickly gets one tab. */
+  private openQueue: Promise<void> = Promise.resolve();
+  openPaths(paths: string[]) {
+    for (const p of paths) this.openQueue = this.openQueue.then(() => this.openPath(p));
   }
 
   private buildChrome() {
@@ -238,6 +245,8 @@ export class App {
   }
 
   async openPath(path: string) {
+    const open = this.docs.find((d) => d.path === path);
+    if (open) return this.activate(open);
     try {
       await this.openFiles([await this.platform.readPath(path)]);
     } catch (e: any) {

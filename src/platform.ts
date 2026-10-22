@@ -23,6 +23,8 @@ export interface Platform {
   canReveal: boolean;
   reveal(path: string): Promise<void>;
   initialPaths(): Promise<string[]>;
+  /** Files the OS asks the running app to open (double-click, Open With, second launch). */
+  onOpenPaths(handler: (paths: string[]) => void): Promise<void>;
   setTitle(title: string): void;
   /** handler resolves true if the window may close. */
   onCloseRequested(handler: () => Promise<boolean>): void;
@@ -88,6 +90,10 @@ async function tauriPlatform(): Promise<Platform> {
     baseName: baseNameOf,
     reveal: (p) => opener.revealItemInDir(p),
     initialPaths: () => invoke<string[]>("initial_paths"),
+    async onOpenPaths(handler) {
+      const { listen } = await import("@tauri-apps/api/event");
+      await listen<string[]>("open-files", (e) => handler(e.payload));
+    },
     setTitle: (t) => void win.setTitle(t),
     onCloseRequested(handler) {
       void win.onCloseRequested(async (event) => {
@@ -205,6 +211,7 @@ function browserPlatform(): Platform {
     async initialPaths() {
       return [];
     },
+    async onOpenPaths() {},
     setTitle: (t) => (document.title = t),
     onCloseRequested(handler) {
       // Browsers only allow a generic prompt; ask it whenever there are unsaved changes.
