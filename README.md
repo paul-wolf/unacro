@@ -33,6 +33,14 @@ See [GOALS.md](GOALS.md) for what Unacro is (and deliberately isn't).
 
 On macOS, use `⌘` instead of `Ctrl`.
 
+## Download
+
+Installers for macOS, Linux and Windows are on the [Releases page](https://github.com/paul-wolf/unacro/releases).
+
+- **macOS:** the `.dmg` (`aarch64` for Apple Silicon, `x64` for Intel). The app isn't notarized yet, so the first time macOS may refuse to open it. Go to System Settings → Privacy & Security and click "Open Anyway", or run `xattr -dr com.apple.quarantine /Applications/Unacro.app`.
+- **Linux:** the `.AppImage` runs on most distributions. There's also a `.deb` (Debian, Ubuntu) and an `.rpm` (Fedora, openSUSE).
+- **Windows:** the `.msi` or `-setup.exe`. SmartScreen may warn about an unrecognised app: click "More info", then "Run anyway".
+
 ## Building
 
 You need [Node.js](https://nodejs.org) 20+ and [Rust](https://rustup.rs), plus Tauri's system libraries ([prerequisites](https://v2.tauri.app/start/prerequisites/)). On Debian/Ubuntu:
@@ -68,6 +76,17 @@ Tests:
 npm test                      # PDF building and Markdown conversion
 cd src-tauri && cargo test    # native file writing
 ```
+
+## Releasing
+
+The app's version comes from `package.json`. To publish a release:
+
+```sh
+npm version 0.2.0          # updates package.json, commits, and tags v0.2.0
+git push --follow-tags
+```
+
+The tag starts the [Release workflow](.github/workflows/release.yml). It builds installers for macOS (Apple Silicon and Intel), Linux (x64 and ARM: AppImage, deb, rpm) and Windows, and attaches them to a **draft** release. Check the draft on GitHub's Releases page, edit the notes, and click Publish. The [CI workflow](.github/workflows/ci.yml) type-checks and runs the tests on every push.
 
 ## How it's built
 
