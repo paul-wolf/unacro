@@ -38,7 +38,7 @@ Preview's file handling is the main frustration Unacro exists to fix. These are 
 - **Images stay images.** Saving an image writes the same format back. If that's impossible (GIF and HEIC can't be written, and an image that now has several pages has to become a PDF), Unacro says why and asks where to save instead. It never silently changes the format.
 - **No surprise autosave.** Nothing touches your file on disk until you save. Unsaved changes are clearly marked, and closing a changed document asks first.
 - **Saves are atomic.** Unacro writes to a temporary file and then renames it over the original. A crash mid-save can't leave you with half a file.
-- **Always know where a file is.** The full path is visible in the status bar, title bar and tab tooltip, and "Show in Folder" opens your file manager on it.
+- **Always know where a file is.** The full path is visible in the status bar, title bar and tab tooltip, and "Open Containing Folder" (on a tab's right-click menu, or by clicking the path in the status bar) opens your file manager with the file selected.
 - **Many documents, one window.** Open documents are tabs in a single window, with a list of all tabs for quick switching. Thirty open files should feel no heavier than three, because pages render only when they're on screen.
 - **Opening from the file manager adds a tab.** Double-clicking a file, "Open With", or dropping it on the app icon opens it in the running window. It never starts a second copy of the app.
 - **Drag and drop works the obvious way.** Drop a file on the window to open it. Drop it into the thumbnail sidebar to insert its pages at that spot.

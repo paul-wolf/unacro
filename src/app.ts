@@ -1004,8 +1004,8 @@ export class App {
     const pathEl = d.path
       ? h("button", {
           class: "path",
-          title: this.platform.canReveal ? "Show in folder" : this.platform.displayPath(d.path),
-          onclick: () => this.platform.canReveal && void this.platform.reveal(d.path!),
+          title: this.platform.canReveal ? "Open containing folder" : this.platform.displayPath(d.path),
+          onclick: () => this.platform.canReveal && this.revealDoc(d),
         }, this.platform.canReveal ? icon("folder") : null, h("span", { class: "path-text" }, h("bdi", {}, this.platform.displayPath(d.path))))
       : h("span", { class: "path muted" }, "No file location yet. Save will ask where.");
     const parts: Node[] = [pathEl, h("span", { class: "spacer" })];
@@ -1498,7 +1498,7 @@ export class App {
       { separator: true, label: "" },
       { label: "Export as Markdown…", disabled: !pages || !!d?.imageFormat, action: () => void this.exportMarkdown() },
       { separator: true, label: "" },
-      ...(this.platform.canReveal ? [{ label: "Show in Folder", disabled: !d?.path, action: () => d?.path && void this.platform.reveal(d.path) }] : []),
+      ...(this.platform.canReveal ? [{ label: "Open Containing Folder", disabled: !d?.path, action: () => d && this.revealDoc(d) }] : []),
       { label: "Close", shortcut: `${MOD}W`, disabled: !d, action: () => d && void this.closeDoc(d) },
     ];
     openMenu(items, r.left, r.bottom + 4);
@@ -1516,14 +1516,22 @@ export class App {
     );
   }
 
+  /** Open the file manager on the folder that holds the document, with the file selected. */
+  private revealDoc(d: Doc) {
+    if (!d.path) return;
+    this.platform.reveal(d.path).catch((e: any) => toast(`Couldn't open the folder: ${e?.message ?? e}`, "error"));
+  }
+
   private showTabMenu(d: Doc, x: number, y: number) {
     openMenu(
       [
+        ...(this.platform.canReveal
+          ? [{ label: d.path ? "Open Containing Folder" : "Open Containing Folder (not saved yet)", disabled: !d.path, action: () => this.revealDoc(d) }]
+          : []),
+        { label: "Copy Path", disabled: !d.path, action: () => d.path && void navigator.clipboard.writeText(this.platform.displayPath(d.path)) },
+        { separator: true, label: "" },
         { label: "Close", action: () => void this.closeDoc(d) },
         { label: "Close Other Tabs", disabled: this.docs.length < 2, action: () => void this.closeOthers(d) },
-        { separator: true, label: "" },
-        ...(this.platform.canReveal ? [{ label: "Show in Folder", disabled: !d.path, action: () => d.path && void this.platform.reveal(d.path) }] : []),
-        { label: "Copy Path", disabled: !d.path, action: () => d.path && void navigator.clipboard.writeText(this.platform.displayPath(d.path)) },
       ],
       x,
       y,

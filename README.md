@@ -14,7 +14,7 @@ See [GOALS.md](GOALS.md) for what Unacro is (and deliberately isn't).
 - **Sign**: draw your signature once (or import a photo/scan of it), then click to place it, drag to move, resize from the corner
 - **Markdown**: export or copy a document as Markdown, with headings, paragraphs and lists inferred from the layout
 - **3D models**: STL viewer with rotate, pan, zoom, size and triangle count
-- **Proper file handling**: Save, Save As (the document then lives at the new location), Save a Copy, no autosave, atomic writes, full path in the status bar with "Show in Folder", unsaved-changes prompts, recent files, one window with tabs
+- **Proper file handling**: Save, Save As (the document then lives at the new location), Save a Copy, no autosave, atomic writes, full path in the status bar (click it to open the containing folder), "Open Containing Folder" on each tab's right-click menu, unsaved-changes prompts, recent files, one window with tabs
 
 ## Keyboard
 
