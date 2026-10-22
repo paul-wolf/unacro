@@ -3,7 +3,17 @@
 import { buildPdf } from "./core/build";
 import { pagesToMarkdown } from "./core/markdown";
 import { clonePages, movePages, normRotation, pagesForSource, uid, type PageRef, type Stamp } from "./core/model";
-import { Source, Sources, displaySize, renderInto, renderTextLayer, totalRotation, viewportFor } from "./pdf";
+import { Source, Sources, displaySize, flattenPage, renderInto, renderTextLayer, totalRotation, viewportFor } from "./pdf";
+import {
+  IMAGE_LABEL,
+  WRITABLE_IMAGE_FORMATS,
+  detect,
+  replaceExt,
+  saveFormatOf,
+  type ImageFormat,
+} from "./core/formats";
+import { encodeCanvas } from "./images";
+import { createModelViewer, parseStl, type LoadedModel, type ModelViewer, type ViewState } from "./model3d";
 import { isMac, type OpenedFile, type Platform } from "./platform";
 import { closeMenus, h, icon, isModalOpen, modal, openMenu, showPopover, toast, type MenuItem } from "./ui/dom";
 import {
@@ -29,6 +39,12 @@ interface Doc {
   anchor: string | null;
   zoom: number | "fit";
   scrollTop: number;
+  /** "pages" for PDFs and images; "model" for a 3D model, which has no pages. */
+  kind: "pages" | "model";
+  /** Set when the document was opened from an image, so Save writes an image back. */
+  imageFormat: ImageFormat | null;
+  model: LoadedModel | null;
+  view3d: ViewState | null;
 }
 
 interface PageEl {
@@ -75,6 +91,9 @@ export class App {
   private sidebar = h("aside", { class: "sidebar", tabindex: "0", "aria-label": "Pages" });
   private viewer = h("section", { class: "viewer", "aria-label": "Document" });
   private pagesHost = h("div", { class: "pages" });
+  private modelHost = h("section", { class: "model-view", "aria-label": "3D model" });
+  private modelViewer: ModelViewer | null = null;
+  private modelViewerLoading: Promise<ModelViewer | null> | null = null;
   private empty = h("div", { class: "empty" });
   private status = h("footer", { class: "statusbar" });
   private searchInput = h("input", { class: "search-input", type: "search", placeholder: "Find", "aria-label": "Find in document" });
@@ -185,14 +204,18 @@ export class App {
       if (e.target === this.tabs) void this.openDialog();
     });
 
-    const workspace = h("main", { class: "workspace" }, this.sidebar, this.viewer, this.empty);
+    const workspace = h("main", { class: "workspace" }, this.sidebar, this.viewer, this.modelHost, this.empty);
     this.root.append(this.toolbar, this.tabs, workspace, this.status);
   }
 
   // ================================================================ documents
 
-  private newDoc(name: string, path: string | null, pages: PageRef[], clean = true): Doc {
+  private newDoc(name: string, path: string | null, pages: PageRef[], clean = true, extra: Partial<Doc> = {}): Doc {
     const doc: Doc = {
+      kind: "pages",
+      imageFormat: null,
+      model: null,
+      view3d: null,
       id: uid("d"),
       name,
       path,
@@ -204,14 +227,21 @@ export class App {
       anchor: null,
       zoom: "fit",
       scrollTop: 0,
+      ...extra,
     };
     this.docs.push(doc);
     return doc;
   }
 
+  /** Load a PDF or image as a page source. 3D models can't become pages. */
   private async loadSource(file: OpenedFile): Promise<Source | null> {
     try {
-      const src = await Source.load(file.name, file.bytes);
+      const kind = detect(file.name, file.bytes);
+      if (!kind) throw new Error(`Unacro can't open “${file.name}”.`);
+      if (kind.kind === "model") throw new Error(`“${file.name}” is a 3D model, so it can't be added as pages.`);
+      const src = kind.kind === "image"
+        ? await Source.loadImage(file.name, file.bytes, kind.format!)
+        : await Source.load(file.name, file.bytes);
       this.sources.add(src);
       return src;
     } catch (e: any) {
@@ -228,9 +258,21 @@ export class App {
         last = existing;
         continue;
       }
+      if (detect(f.name, f.bytes)?.kind === "model") {
+        try {
+          const model = await parseStl(f.bytes);
+          last = this.newDoc(f.name, f.path, [], true, { kind: "model", model });
+          if (f.path) this.addRecent(f.path);
+        } catch (e: any) {
+          toast(`Couldn't open “${f.name}”: ${e?.message ?? e}`, "error");
+        }
+        continue;
+      }
       const src = await this.loadSource(f);
       if (!src) continue;
-      last = this.newDoc(f.name, f.path, pagesForSource(src.id, src.pageCount));
+      last = this.newDoc(f.name, f.path, pagesForSource(src.id, src.pageCount), true, {
+        imageFormat: src.original?.format ?? null,
+      });
       if (f.path) this.addRecent(f.path);
     }
     if (last) this.activate(last);
@@ -238,7 +280,7 @@ export class App {
 
   async openDialog() {
     try {
-      await this.openFiles(await this.platform.pickPdfs(true));
+      await this.openFiles(await this.platform.pickFiles(true));
     } catch (e: any) {
       toast(`Couldn't open: ${e?.message ?? e}`, "error");
     }
@@ -255,9 +297,31 @@ export class App {
     }
   }
 
-  /** Pick several PDFs and combine them into a new, unsaved document. */
+  /** Open the image on the clipboard (e.g. a screenshot) as a new, unsaved image. */
+  async newFromClipboard() {
+    let png: Uint8Array | null;
+    try {
+      png = await this.platform.readClipboardImage();
+    } catch (e: any) {
+      toast(`Couldn't read the clipboard: ${e?.message ?? e}`, "error");
+      return;
+    }
+    if (!png) return toast("There's no image on the clipboard. Take a screenshot to the clipboard first.");
+    const now = new Date();
+    const pad = (n: number) => String(n).padStart(2, "0");
+    const name = `Screenshot ${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} at ${pad(now.getHours())}.${pad(now.getMinutes())}.${pad(now.getSeconds())}.png`;
+    try {
+      const src = await Source.loadImage(name, png, "png");
+      this.sources.add(src);
+      this.activate(this.newDoc(name, null, pagesForSource(src.id, src.pageCount), false, { imageFormat: "png" }));
+    } catch (e: any) {
+      toast(e?.message ?? String(e), "error");
+    }
+  }
+
+  /** Pick several PDFs or images and combine them into a new, unsaved PDF. */
   async combineFromFiles() {
-    const files = await this.platform.pickPdfs(true).catch((e) => {
+    const files = await this.platform.pickFiles(true, "pages").catch((e) => {
       toast(String(e?.message ?? e), "error");
       return [] as OpenedFile[];
     });
@@ -274,13 +338,18 @@ export class App {
   }
 
   combineOpenTabs() {
-    if (this.docs.length < 2) return;
-    const pages = this.docs.flatMap((d) => clonePages(d.pages));
+    const pageDocs = this.docs.filter((d) => d.kind === "pages");
+    if (pageDocs.length < 2) return;
+    const pages = pageDocs.flatMap((d) => clonePages(d.pages));
     this.activate(this.newDoc("Combined.pdf", null, pages, false));
   }
 
   private activate(doc: Doc | null) {
-    if (this.active && this.active !== doc) this.active.scrollTop = this.viewer.scrollTop;
+    if (this.active && this.active !== doc) {
+      this.active.scrollTop = this.viewer.scrollTop;
+      if (this.active.kind === "model") this.active.view3d = this.modelViewer?.getView() ?? null;
+      this.modelShown = null;
+    }
     this.active = doc;
     this.selectedStamp = null;
     this.placing = null;
@@ -309,6 +378,11 @@ export class App {
     }
     const i = this.docs.indexOf(doc);
     this.docs.splice(i, 1);
+    if (doc.model) {
+      if (this.modelShown === doc) this.modelShown = null;
+      const geometry = doc.model.geometry;
+      setTimeout(() => geometry.dispose()); // after the viewer has switched away from it
+    }
     if (this.active === doc) this.activate(this.docs[Math.min(i, this.docs.length - 1)] ?? null);
     else this.render();
     this.collectSources();
@@ -340,17 +414,66 @@ export class App {
 
   // ================================================================ saving
 
-  private async writePdf(doc: Doc, path: string) {
-    const bytes = await buildPdf({ pages: doc.pages, sources: this.sources.bytesMap(), images: this.images });
-    await this.platform.write(path, bytes);
+  /** Write the document to `path` in the format its extension asks for. */
+  private async writeTo(doc: Doc, path: string) {
+    const format = saveFormatOf(path);
+    if (format === "pdf" || format === null) {
+      const bytes = await buildPdf({ pages: doc.pages, sources: this.sources.bytesMap(), images: this.images });
+      await this.platform.write(path, bytes);
+      return;
+    }
+    const problem = this.imageSaveProblem(doc, format);
+    if (problem) throw new Error(problem);
+    const keepsAlpha = format === "png" || format === "tiff";
+    const canvas = await flattenPage(this.sources, doc.pages[0], this.images, !keepsAlpha);
+    try {
+      await this.platform.write(path, await encodeCanvas(canvas, format));
+    } finally {
+      canvas.width = 0;
+      canvas.height = 0;
+    }
+  }
+
+  /** Why the document can't be written as this image format, or null if it can. */
+  private imageSaveProblem(doc: Doc, format: ImageFormat): string | null {
+    if (!WRITABLE_IMAGE_FORMATS.includes(format)) {
+      return `Unacro can open ${IMAGE_LABEL[format]} images but can't save them, so choose another format.`;
+    }
+    if (doc.pages.length !== 1) return "This document has more than one page, so it needs to be saved as a PDF.";
+    return null;
+  }
+
+  /** The name a save dialog suggests: the file's own name if it can be written as is. */
+  private suggestedName(doc: Doc): string {
+    const fmt = saveFormatOf(doc.name);
+    if (!doc.imageFormat || fmt === "pdf") return fmt === "pdf" ? doc.name : replaceExt(doc.name, "pdf");
+    if (doc.pages.length !== 1) return replaceExt(doc.name, "pdf");
+    if (fmt && !WRITABLE_IMAGE_FORMATS.includes(fmt)) return replaceExt(doc.name, fmt === "heic" ? "jpg" : "png");
+    return doc.name;
+  }
+
+  private saveKind(doc: Doc) {
+    return doc.imageFormat && doc.pages.length === 1 ? "image" : "pdf";
   }
 
   /** Save to the document's own file, or ask where if it has none. Returns false if cancelled or failed. */
   async save(doc = this.active): Promise<boolean> {
-    if (!doc) return false;
+    if (!doc || doc.kind === "model") return false;
     if (!doc.path || doc.path.startsWith("download:")) return this.saveAs(doc);
+    const format = saveFormatOf(doc.path);
+    if (format && format !== "pdf") {
+      if (!isDirty(doc)) {
+        toast("No changes to save");
+        return true;
+      }
+      const problem = this.imageSaveProblem(doc, format);
+      if (problem) {
+        toast(problem);
+        return this.saveAs(doc);
+      }
+    }
     try {
-      await this.writePdf(doc, doc.path);
+      await this.writeTo(doc, doc.path);
       doc.saved = snapshot(doc.pages);
       this.render();
       toast(`Saved ${doc.name}`);
@@ -363,13 +486,15 @@ export class App {
 
   /** Save to a new file; the document now lives there. */
   async saveAs(doc = this.active): Promise<boolean> {
-    if (!doc) return false;
-    const path = await this.platform.pickSavePath(doc.name, "pdf", doc.path);
+    if (!doc || doc.kind === "model") return false;
+    const path = await this.platform.pickSavePath(this.suggestedName(doc), this.saveKind(doc), doc.path);
     if (!path) return false;
     try {
-      await this.writePdf(doc, path);
+      await this.writeTo(doc, path);
+      const format = saveFormatOf(path);
       doc.path = path;
       doc.name = this.platform.baseName(path);
+      doc.imageFormat = format && format !== "pdf" ? format : null;
       doc.saved = snapshot(doc.pages);
       this.addRecent(path);
       this.render();
@@ -382,13 +507,15 @@ export class App {
   }
 
   /** Write the current state elsewhere; the open document keeps pointing at its file. */
-  async saveCopy(doc = this.active) {
-    if (!doc) return;
-    const base = doc.name.replace(/\.pdf$/i, "");
-    const path = await this.platform.pickSavePath(`${base} copy.pdf`, "pdf", doc.path);
+  async saveCopy(doc = this.active, asPdf = false) {
+    if (!doc || doc.kind === "model") return;
+    const suggested = asPdf ? replaceExt(doc.name, "pdf") : this.suggestedName(doc);
+    const dot = suggested.lastIndexOf(".");
+    const name = asPdf ? suggested : `${suggested.slice(0, dot)} copy${suggested.slice(dot)}`;
+    const path = await this.platform.pickSavePath(name, asPdf ? "pdf" : this.saveKind(doc), doc.path);
     if (!path) return;
     try {
-      await this.writePdf(doc, path);
+      await this.writeTo(doc, path);
       this.addRecent(path);
       toast(`Saved a copy as ${this.platform.baseName(path)}`);
     } catch (e: any) {
@@ -399,6 +526,7 @@ export class App {
   // ================================================================ markdown
 
   private async markdownFor(doc: Doc): Promise<string> {
+    if (doc.kind !== "pages") return "";
     const texts = await Promise.all(doc.pages.map((p) => this.sources.get(p.sourceId).pageText(p.index, p.rotation)));
     return pagesToMarkdown(texts);
   }
@@ -406,7 +534,7 @@ export class App {
   async exportMarkdown() {
     const doc = this.active;
     if (!doc) return;
-    const name = doc.name.replace(/\.pdf$/i, "") + ".md";
+    const name = replaceExt(doc.name, "md");
     const path = await this.platform.pickSavePath(name, "md", doc.path);
     if (!path) return;
     try {
@@ -514,8 +642,8 @@ export class App {
 
   async insertFromFile(at?: number) {
     const d = this.active;
-    if (!d) return this.openDialog();
-    const files = await this.platform.pickPdfs(true).catch(() => [] as OpenedFile[]);
+    if (!d || d.kind !== "pages") return this.openDialog();
+    const files = await this.platform.pickFiles(true, "pages").catch(() => [] as OpenedFile[]);
     await this.insertFiles(d, files, at ?? this.insertIndex(d));
   }
 
@@ -539,7 +667,7 @@ export class App {
 
   pastePages() {
     const d = this.active;
-    if (!d || !this.clipboard.length) return;
+    if (!d || d.kind !== "pages" || !this.clipboard.length) return;
     this.insertPages(d, clonePages(this.clipboard), this.insertIndex(d));
   }
 
@@ -547,7 +675,7 @@ export class App {
     const d = this.active;
     if (!d || !d.selection.size) return;
     const pages = clonePages(d.pages.filter((p) => d.selection.has(p.id)));
-    const base = d.name.replace(/\.pdf$/i, "");
+    const base = d.name.replace(/\.[^.]+$/, "");
     this.activate(this.newDoc(`${base} (pages).pdf`, null, pages, false));
   }
 
@@ -575,7 +703,7 @@ export class App {
   // ================================================================ signatures
 
   private showSignMenu(anchor: HTMLElement) {
-    if (!this.active) return;
+    if (this.active?.kind !== "pages") return;
     const sigs = loadSignatures();
     const r = anchor.getBoundingClientRect();
     const panel = h("div", { class: "menu sign-menu", role: "menu" });
@@ -670,12 +798,19 @@ export class App {
     if (!d || !d.pages.length) return 1;
     const avail = Math.max(200, this.viewer.clientWidth - 48);
     const widest = Math.max(...d.pages.map((p) => displaySize(this.sources, p).width));
-    return Math.min(avail / widest, 1.75);
+    // Images aren't enlarged beyond their own pixel size; documents stop at 175%.
+    const ppp = d.pages.map((p) => this.sources.get(p.sourceId).original?.pointsPerPixel[p.index]);
+    const max = ppp.every((k) => k) ? 1 / Math.max(...(ppp as number[])) : 1.75;
+    return Math.min(avail / widest, max);
   }
 
   setZoom(z: number | "fit") {
     const d = this.active;
     if (!d) return;
+    if (d.kind === "model") {
+      if (z === "fit") this.modelViewer?.resetView();
+      return;
+    }
     // Keep the current page in place while zooming.
     const anchorId = this.currentPageId;
     const anchorEl = anchorId ? this.pageEls.get(anchorId)?.el : null;
@@ -687,6 +822,7 @@ export class App {
 
   zoomBy(f: number) {
     if (!this.active) return;
+    if (this.active.kind === "model") return this.modelViewer?.zoom(f);
     this.setZoom(this.scale * f);
   }
 
@@ -744,11 +880,13 @@ export class App {
   private render(full = false) {
     const d = this.active;
     this.root.classList.toggle("has-doc", !!d);
+    this.root.classList.toggle("model-doc", d?.kind === "model");
     this.renderTabs();
     this.renderToolbarState();
     this.renderStatus();
     this.renderTitle();
-    if (!d) {
+    if (!d || d.kind === "model") {
+      if (d) void this.showModel(d);
       this.renderEmpty();
       for (const pe of this.pageEls.values()) this.pageObserver.unobserve(pe.el);
       this.pageEls.clear();
@@ -769,6 +907,26 @@ export class App {
     this.layoutViewer();
   }
 
+  private async ensureModelViewer(): Promise<ModelViewer | null> {
+    if (this.modelViewer) return this.modelViewer;
+    this.modelViewerLoading ??= createModelViewer(this.modelHost)
+      .then((v) => (this.modelViewer = v))
+      .catch((e) => {
+        this.modelViewerLoading = null;
+        this.modelHost.replaceChildren(h("p", { class: "model-error" }, `3D viewing isn't available here: ${e?.message ?? e}`));
+        return null;
+      });
+    return this.modelViewerLoading;
+  }
+
+  private modelShown: Doc | null = null;
+  private async showModel(d: Doc) {
+    const viewer = await this.ensureModelViewer();
+    if (!viewer || this.active !== d || !d.model || this.modelShown === d) return;
+    this.modelShown = d;
+    viewer.show(d.model, d.view3d);
+  }
+
   private renderTitle() {
     const d = this.active;
     (window as any).__unacroDirty = this.docs.some(isDirty);
@@ -779,14 +937,15 @@ export class App {
 
   private renderToolbarState() {
     const d = this.active;
-    const has = !!d;
-    for (const k of ["save", "insert", "rotl", "rotr", "delete", "sign", "md", "zoomin", "zoomout"]) this.buttons[k].disabled = !has;
+    const pages = d?.kind === "pages";
+    for (const k of ["save", "insert", "rotl", "rotr", "delete", "sign", "md"]) this.buttons[k].disabled = !pages;
+    for (const k of ["zoomin", "zoomout"]) this.buttons[k].disabled = !d;
     this.buttons.undo.disabled = !d?.undo.length;
     this.buttons.redo.disabled = !d?.redo.length;
     this.buttons.delete.disabled = !d?.selection.size;
-    this.searchInput.disabled = !has;
+    this.searchInput.disabled = !pages;
     const zl = this.toolbar.querySelector(".zoom-value");
-    if (zl) zl.textContent = d ? (d.zoom === "fit" ? "Fit" : `${Math.round(this.scale * 100)}%`) : "–";
+    if (zl) zl.textContent = !d ? "–" : d.kind === "model" || d.zoom === "fit" ? "Fit" : `${Math.round(this.scale * 100)}%`;
   }
 
   private renderTabs() {
@@ -850,6 +1009,17 @@ export class App {
         }, this.platform.canReveal ? icon("folder") : null, h("span", { class: "path-text" }, h("bdi", {}, this.platform.displayPath(d.path))))
       : h("span", { class: "path muted" }, "No file location yet. Save will ask where.");
     const parts: Node[] = [pathEl, h("span", { class: "spacer" })];
+    if (d.kind === "model" && d.model) {
+      const { size, triangles } = d.model.info;
+      const fmt = (n: number) => (n >= 100 ? n.toFixed(0) : n >= 10 ? n.toFixed(1) : n.toFixed(2));
+      parts.push(
+        h("span", { title: "Bounding box in the file's units (usually millimetres)" }, `${size.map(fmt).join(" × ")}`),
+        h("span", {}, `${triangles.toLocaleString()} triangles`),
+        h("span", { class: "muted" }, "Drag to rotate · right-drag to pan · scroll to zoom"),
+      );
+      this.status.replaceChildren(...parts);
+      return;
+    }
     if (d.selection.size > 1) parts.push(h("span", {}, `${d.selection.size} pages selected`));
     parts.push(h("span", { class: "page-pos" }, `Page ${idx + 1 || 1} of ${d.pages.length}`));
     this.status.replaceChildren(...parts);
@@ -862,12 +1032,13 @@ export class App {
         "div",
         { class: "empty-inner" },
         h("div", { class: "brand" }, "Unacro"),
-        h("p", { class: "muted" }, "Drop PDFs anywhere to open them."),
+        h("p", { class: "muted" }, "Drop PDFs, images or STL models anywhere to open them."),
         h(
           "div",
           { class: "empty-actions" },
-          h("button", { class: "btn primary", onclick: () => void this.openDialog() }, "Open PDF…"),
-          h("button", { class: "btn plain", onclick: () => void this.combineFromFiles() }, "Combine PDFs…"),
+          h("button", { class: "btn primary", onclick: () => void this.openDialog() }, "Open…"),
+          h("button", { class: "btn plain", onclick: () => void this.newFromClipboard() }, "New from Clipboard"),
+          h("button", { class: "btn plain", onclick: () => void this.combineFromFiles() }, "Combine Files…"),
         ),
         recent.length
           ? h(
@@ -1222,7 +1393,7 @@ export class App {
       const tabEl = over?.closest<HTMLElement>(".tab");
       this.tabs.querySelectorAll(".tab.drop-target").forEach((t) => t.classList.remove("drop-target"));
       dropTab = null;
-      if (tabEl && tabEl.dataset.doc !== d.id) {
+      if (tabEl && tabEl.dataset.doc !== d.id && this.docs.find((x) => x.id === tabEl.dataset.doc)?.kind === "pages") {
         dropTab = this.docs.find((x) => x.id === tabEl.dataset.doc) ?? null;
         tabEl.classList.add("drop-target");
         marker.remove();
@@ -1288,10 +1459,10 @@ export class App {
 
   private async onFileDrop(getFiles: () => Promise<OpenedFile[]>, x: number, y: number) {
     const target = document.elementFromPoint(x, y) as HTMLElement | null;
-    const intoSidebar = !!this.active && !!target?.closest(".sidebar");
+    const intoSidebar = this.active?.kind === "pages" && !!target?.closest(".sidebar");
     const at = intoSidebar ? this.sidebarIndexAt(y) : 0;
     const files = await getFiles();
-    if (!files.length) return toast("Only PDF files can be opened.", "error");
+    if (!files.length) return toast("Unacro opens PDFs, images (JPEG, PNG, GIF, HEIC, TIFF, BMP) and STL models.", "error");
     if (intoSidebar && this.active) await this.insertFiles(this.active, files, at);
     else await this.openFiles(files);
   }
@@ -1300,9 +1471,11 @@ export class App {
 
   private showFileMenu(anchor: HTMLElement) {
     const d = this.active;
+    const pages = d?.kind === "pages";
     const r = anchor.getBoundingClientRect();
     const recent = this.platform.persistentPaths ? this.getRecent() : [];
     const items: MenuItem[] = [
+      { label: "New from Clipboard", shortcut: `${MOD}N`, action: () => void this.newFromClipboard() },
       { label: "Open…", shortcut: `${MOD}O`, action: () => void this.openDialog() },
       ...(this.platform.persistentPaths
         ? [{
@@ -1315,14 +1488,15 @@ export class App {
             ],
           }]
         : []),
-      { label: "Combine PDFs into New Document…", action: () => void this.combineFromFiles() },
-      { label: "Combine All Open Tabs", disabled: this.docs.length < 2, action: () => this.combineOpenTabs() },
+      { label: "Combine Files into New PDF…", action: () => void this.combineFromFiles() },
+      { label: "Combine All Open Tabs", disabled: this.docs.filter((x) => x.kind === "pages").length < 2, action: () => this.combineOpenTabs() },
       { separator: true, label: "" },
-      { label: "Save", shortcut: `${MOD}S`, disabled: !d, action: () => void this.save() },
-      { label: "Save As…", shortcut: `${SHIFT}${MOD}S`, disabled: !d, action: () => void this.saveAs() },
-      { label: "Save a Copy…", disabled: !d, action: () => void this.saveCopy() },
+      { label: "Save", shortcut: `${MOD}S`, disabled: !pages, action: () => void this.save() },
+      { label: "Save As…", shortcut: `${SHIFT}${MOD}S`, disabled: !pages, action: () => void this.saveAs() },
+      { label: "Save a Copy…", disabled: !pages, action: () => void this.saveCopy() },
+      ...(d?.imageFormat ? [{ label: "Export as PDF…", action: () => void this.saveCopy(d, true) }] : []),
       { separator: true, label: "" },
-      { label: "Export as Markdown…", disabled: !d, action: () => void this.exportMarkdown() },
+      { label: "Export as Markdown…", disabled: !pages || !!d?.imageFormat, action: () => void this.exportMarkdown() },
       { separator: true, label: "" },
       ...(this.platform.canReveal ? [{ label: "Show in Folder", disabled: !d?.path, action: () => d?.path && void this.platform.reveal(d.path) }] : []),
       { label: "Close", shortcut: `${MOD}W`, disabled: !d, action: () => d && void this.closeDoc(d) },
@@ -1429,6 +1603,7 @@ export class App {
     if (mod) {
       const act: Record<string, () => void> = {
         o: () => void this.openDialog(),
+        n: () => void this.newFromClipboard(),
         s: () => void (e.shiftKey ? this.saveAs() : this.save()),
         w: () => this.active && void this.closeDoc(this.active),
         f: () => {

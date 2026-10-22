@@ -8,14 +8,61 @@ export interface OpenedFile {
   bytes: Uint8Array;
 }
 
-export type FileKind = "pdf" | "md";
+import { ALL_EXTS, IMAGE_OPEN_EXTS, MODEL_EXTS, PDF_EXTS, extOf } from "./core/formats";
+
+/** What a save dialog is for. "image" offers image formats and PDF. */
+export type SaveKind = "pdf" | "md" | "image";
+/** What an open dialog accepts: everything, or only things that can become pages. */
+export type OpenKind = "any" | "pages";
+
+const OPEN_FILTERS: Record<OpenKind, { name: string; extensions: string[] }[]> = {
+  any: [
+    { name: "All supported files", extensions: ALL_EXTS },
+    { name: "PDF", extensions: PDF_EXTS },
+    { name: "Images", extensions: IMAGE_OPEN_EXTS },
+    { name: "3D models", extensions: MODEL_EXTS },
+  ],
+  pages: [
+    { name: "PDFs and images", extensions: [...PDF_EXTS, ...IMAGE_OPEN_EXTS] },
+    { name: "PDF", extensions: PDF_EXTS },
+    { name: "Images", extensions: IMAGE_OPEN_EXTS },
+  ],
+};
+
+const SAVE_FILTERS: Record<string, { name: string; extensions: string[] }> = {
+  pdf: { name: "PDF", extensions: ["pdf"] },
+  md: { name: "Markdown", extensions: ["md"] },
+  png: { name: "PNG image", extensions: ["png"] },
+  jpg: { name: "JPEG image", extensions: ["jpg", "jpeg"] },
+  tiff: { name: "TIFF image", extensions: ["tiff", "tif"] },
+  bmp: { name: "BMP image", extensions: ["bmp"] },
+};
+const IMAGE_SAVE_EXTS = ["png", "jpg", "jpeg", "tiff", "tif", "bmp", "pdf"];
+
+/** Save dialog filters, with the suggested file's own format first. */
+function saveFilters(kind: SaveKind, suggestedName: string) {
+  if (kind !== "image") return [SAVE_FILTERS[kind]];
+  const ext = extOf(suggestedName);
+  const first = ext === "jpeg" ? "jpg" : ext === "tif" ? "tiff" : ext;
+  const order = [first, ...["png", "jpg", "tiff", "bmp", "pdf"].filter((e) => e !== first)];
+  return order.filter((e) => SAVE_FILTERS[e]).map((e) => SAVE_FILTERS[e]);
+}
+
+/** Make sure a chosen path has an extension this kind of save can write. */
+function withExtension(path: string, kind: SaveKind, suggestedName: string) {
+  const ext = extOf(path);
+  if (kind === "image") return IMAGE_SAVE_EXTS.includes(ext) ? path : `${path}.${extOf(suggestedName) || "png"}`;
+  return ext === kind ? path : `${path}.${kind}`;
+}
+
+const isSupported = (name: string) => ALL_EXTS.includes(extOf(name));
 
 export interface Platform {
   kind: "tauri" | "browser";
-  pickPdfs(multiple: boolean): Promise<OpenedFile[]>;
+  pickFiles(multiple: boolean, kind?: OpenKind): Promise<OpenedFile[]>;
   readPath(path: string): Promise<OpenedFile>;
   /** Ask where to save. Returns a path/handle key, or null if cancelled. */
-  pickSavePath(suggestedName: string, kind: FileKind, nearPath?: string | null): Promise<string | null>;
+  pickSavePath(suggestedName: string, kind: SaveKind, nearPath?: string | null): Promise<string | null>;
   write(path: string, data: Uint8Array): Promise<void>;
   /** Human-readable location for the status bar and title. */
   displayPath(path: string): string;
@@ -30,8 +77,20 @@ export interface Platform {
   onCloseRequested(handler: () => Promise<boolean>): void;
   /** Files dropped from the file manager, with the drop point in CSS pixels. */
   onFileDrop(handler: (files: () => Promise<OpenedFile[]>, x: number, y: number) => void): void;
+  /** An image on the clipboard (e.g. a screenshot) as PNG bytes, or null if there is none. */
+  readClipboardImage(): Promise<Uint8Array | null>;
   /** Whether recent-file paths survive a restart. */
   persistentPaths: boolean;
+}
+
+async function rgbaToPng(rgba: Uint8Array, width: number, height: number): Promise<Uint8Array> {
+  const c = document.createElement("canvas");
+  c.width = width;
+  c.height = height;
+  c.getContext("2d")!.putImageData(new ImageData(new Uint8ClampedArray(rgba), width, height), 0, 0);
+  const blob = await new Promise<Blob | null>((r) => c.toBlob(r, "image/png"));
+  if (!blob) throw new Error("Couldn't read the clipboard image.");
+  return new Uint8Array(await blob.arrayBuffer());
 }
 
 export function isMac() {
@@ -56,6 +115,7 @@ async function tauriPlatform(): Promise<Platform> {
   const { getCurrentWebview } = await import("@tauri-apps/api/webview");
   const dialog = await import("@tauri-apps/plugin-dialog");
   const opener = await import("@tauri-apps/plugin-opener");
+  const clipboard = await import("@tauri-apps/plugin-clipboard-manager");
   const win = getCurrentWindow();
 
   const readPath = async (path: string): Promise<OpenedFile> => {
@@ -67,8 +127,8 @@ async function tauriPlatform(): Promise<Platform> {
     kind: "tauri",
     persistentPaths: true,
     canReveal: true,
-    async pickPdfs(multiple) {
-      const picked = await dialog.open({ multiple, filters: [{ name: "PDF", extensions: ["pdf", "PDF"] }] });
+    async pickFiles(multiple, kind = "any") {
+      const picked = await dialog.open({ multiple, filters: OPEN_FILTERS[kind] });
       if (!picked) return [];
       const paths = Array.isArray(picked) ? picked : [picked];
       return Promise.all(paths.map(readPath));
@@ -77,11 +137,8 @@ async function tauriPlatform(): Promise<Platform> {
     async pickSavePath(suggestedName, kind, nearPath) {
       const dir = nearPath ? dirOf(nearPath) : null;
       const defaultPath = dir ? `${dir}/${suggestedName}` : suggestedName;
-      const filters = kind === "pdf" ? [{ name: "PDF", extensions: ["pdf"] }] : [{ name: "Markdown", extensions: ["md"] }];
-      const path = await dialog.save({ defaultPath, filters });
-      if (!path) return null;
-      const ext = kind === "pdf" ? ".pdf" : ".md";
-      return path.toLowerCase().endsWith(ext) ? path : path + ext;
+      const path = await dialog.save({ defaultPath, filters: saveFilters(kind, suggestedName) });
+      return path ? withExtension(path, kind, suggestedName) : null;
     },
     async write(path, data) {
       await invoke("write_file", data, { headers: { "x-path": encodeURIComponent(path) } });
@@ -90,6 +147,16 @@ async function tauriPlatform(): Promise<Platform> {
     baseName: baseNameOf,
     reveal: (p) => opener.revealItemInDir(p),
     initialPaths: () => invoke<string[]>("initial_paths"),
+    async readClipboardImage() {
+      let image;
+      try {
+        image = await clipboard.readImage();
+      } catch {
+        return null; // nothing image-like on the clipboard
+      }
+      const [{ width, height }, rgba] = await Promise.all([image.size(), image.rgba()]);
+      return rgbaToPng(rgba, width, height);
+    },
     async onOpenPaths(handler) {
       const { listen } = await import("@tauri-apps/api/event");
       await listen<string[]>("open-files", (e) => handler(e.payload));
@@ -104,10 +171,10 @@ async function tauriPlatform(): Promise<Platform> {
       void getCurrentWebview().onDragDropEvent((event) => {
         if (event.payload.type !== "drop") return;
         const { paths, position } = event.payload;
-        const pdfs = paths.filter((p) => p.toLowerCase().endsWith(".pdf"));
-        if (!pdfs.length) return;
+        const files = paths.filter(isSupported);
+        if (!files.length) return;
         const ratio = window.devicePixelRatio || 1;
-        handler(() => Promise.all(pdfs.map(readPath)), position.x / ratio, position.y / ratio);
+        handler(() => Promise.all(files.map(readPath)), position.x / ratio, position.y / ratio);
       });
     },
   };
@@ -148,12 +215,13 @@ function browserPlatform(): Platform {
     kind: "browser",
     persistentPaths: false,
     canReveal: false,
-    async pickPdfs(multiple) {
+    async pickFiles(multiple, kind = "any") {
+      const exts = OPEN_FILTERS[kind][0].extensions.map((e) => `.${e}`);
       if (hasFsAccess) {
         try {
           const hs: Handle[] = await (window as any).showOpenFilePicker({
             multiple,
-            types: [{ description: "PDF", accept: { "application/pdf": [".pdf"] } }],
+            types: [{ description: OPEN_FILTERS[kind][0].name, accept: { "application/octet-stream": exts } }],
           });
           return Promise.all(hs.map(async (h) => fileToOpened(await h.getFile(), keepHandle(h))));
         } catch (e: any) {
@@ -161,7 +229,7 @@ function browserPlatform(): Platform {
           throw e;
         }
       }
-      const files = await inputPick(multiple, "application/pdf,.pdf");
+      const files = await inputPick(multiple, exts.join(","));
       return Promise.all(files.map((f) => fileToOpened(f, null)));
     },
     async readPath(path) {
@@ -174,10 +242,10 @@ function browserPlatform(): Platform {
         try {
           const h: Handle = await (window as any).showSaveFilePicker({
             suggestedName,
-            types:
-              kind === "pdf"
-                ? [{ description: "PDF", accept: { "application/pdf": [".pdf"] } }]
-                : [{ description: "Markdown", accept: { "text/markdown": [".md"] } }],
+            types: saveFilters(kind, suggestedName).map((f) => ({
+              description: f.name,
+              accept: { "application/octet-stream": f.extensions.map((e) => `.${e}`) },
+            })),
           });
           return keepHandle(h);
         } catch (e: any) {
@@ -190,7 +258,7 @@ function browserPlatform(): Platform {
     async write(path, data) {
       if (path.startsWith("download:")) {
         const name = path.slice("download:".length);
-        const type = name.endsWith(".md") ? "text/markdown" : "application/pdf";
+        const type = name.endsWith(".md") ? "text/markdown" : name.endsWith(".pdf") ? "application/pdf" : "application/octet-stream";
         const url = URL.createObjectURL(new Blob([data as BlobPart], { type }));
         const a = document.createElement("a");
         a.href = url;
@@ -212,6 +280,24 @@ function browserPlatform(): Platform {
       return [];
     },
     async onOpenPaths() {},
+    async readClipboardImage() {
+      const items = await navigator.clipboard.read();
+      for (const item of items) {
+        const type = item.types.find((t) => t.startsWith("image/"));
+        if (!type) continue;
+        const blob = await item.getType(type);
+        if (type === "image/png") return new Uint8Array(await blob.arrayBuffer());
+        const bmp = await createImageBitmap(blob);
+        const c = document.createElement("canvas");
+        c.width = bmp.width;
+        c.height = bmp.height;
+        const ctx = c.getContext("2d")!;
+        ctx.drawImage(bmp, 0, 0);
+        const { data } = ctx.getImageData(0, 0, c.width, c.height);
+        return rgbaToPng(new Uint8Array(data.buffer), c.width, c.height);
+      }
+      return null;
+    },
     setTitle: (t) => (document.title = t),
     onCloseRequested(handler) {
       // Browsers only allow a generic prompt; ask it whenever there are unsaved changes.
@@ -242,7 +328,7 @@ function browserPlatform(): Platform {
             const out: OpenedFile[] = [];
             for (let i = 0; i < files.length; i++) {
               const f = files[i];
-              if (!/\.pdf$/i.test(f.name) && f.type !== "application/pdf") continue;
+              if (!isSupported(f.name) && f.type !== "application/pdf") continue;
               const h = hs[i];
               out.push(await fileToOpened(f, h && h.kind === "file" ? keepHandle(h) : null));
             }

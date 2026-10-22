@@ -169,6 +169,7 @@ pub fn run() {
     builder
         .manage(Mutex::new(OpenQueue::default()))
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![read_file, write_file, initial_paths])
         .build(tauri::generate_context!())

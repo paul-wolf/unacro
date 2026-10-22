@@ -9,6 +9,8 @@ import type { PageRef } from "./core/model";
 import { uid } from "./core/model";
 import { extractPageText } from "./core/extract";
 import type { PageText } from "./core/markdown";
+import type { ImageFormat } from "./core/formats";
+import { decodeImage, imagePagesToPdf } from "./images";
 
 pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
 const ASSETS = `${import.meta.env.BASE_URL}pdfjs/`;
@@ -27,8 +29,27 @@ export class Source {
   pages: PDFPageProxy[] = [];
   info: PageInfo[] = [];
   private textCache = new Map<number, Promise<string>>();
+  /** For images: the original file, so it can be saved back at full quality. */
+  original: { bytes: Uint8Array; format: ImageFormat; pointsPerPixel: number[] } | null = null;
 
   constructor(readonly name: string, readonly bytes: Uint8Array) {}
+
+  static async loadImage(name: string, bytes: Uint8Array, format: ImageFormat): Promise<Source> {
+    let pages;
+    try {
+      pages = await decodeImage(bytes, format);
+    } catch (e: any) {
+      throw new Error(`Couldn't open “${name}”: ${e?.message ?? e}`);
+    }
+    const { pdf, pointsPerPixel } = await imagePagesToPdf(pages, format);
+    for (const c of pages) {
+      c.width = 0;
+      c.height = 0;
+    }
+    const src = await Source.load(name, pdf);
+    src.original = { bytes, format, pointsPerPixel };
+    return src;
+  }
 
   static async load(name: string, bytes: Uint8Array): Promise<Source> {
     const src = new Source(name, bytes);
@@ -198,4 +219,67 @@ export async function renderTextLayer(sources: Sources, ref: PageRef, scale: num
   container.style.setProperty("--total-scale-factor", String(scale));
   const layer = new pdfjs.TextLayer({ textContentSource: page.streamTextContent(), container, viewport: vp });
   await layer.render();
+}
+
+// ------------------------------------------------------------ flattening to an image
+
+async function bitmapFromPng(bytes: Uint8Array): Promise<ImageBitmap> {
+  return createImageBitmap(new Blob([bytes as BlobPart], { type: "image/png" }));
+}
+
+/**
+ * Draw a page as it will look when saved: rotation and signatures included.
+ * Image pages are drawn from the original pixels; PDF pages are rendered at 144 dpi.
+ */
+export async function flattenPage(
+  sources: Sources,
+  ref: PageRef,
+  stampImages: Map<string, Uint8Array>,
+  opaque: boolean,
+): Promise<HTMLCanvasElement> {
+  const src = sources.get(ref.sourceId);
+  const page = src.pages[ref.index];
+  const rotation = totalRotation(sources, ref);
+  const scale = src.original ? 1 / src.original.pointsPerPixel[ref.index] : 2;
+  const vp = page.getViewport({ scale, rotation });
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.round(vp.width);
+  canvas.height = Math.round(vp.height);
+  const ctx = canvas.getContext("2d")!;
+  if (opaque) {
+    ctx.fillStyle = "#fff";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+  }
+  const [a, b, c, d, e, f] = vp.transform;
+
+  // Draw `img` into the page-space rectangle anchored at its bottom-left corner (x, y).
+  const drawInPageSpace = (img: CanvasImageSource, x: number, y: number, w: number, h: number, deg: number) => {
+    ctx.save();
+    ctx.setTransform(a, b, c, d, e, f);
+    ctx.translate(x, y);
+    ctx.rotate((deg * Math.PI) / 180);
+    ctx.scale(1, -1);
+    ctx.drawImage(img, 0, -h, w, h);
+    ctx.restore();
+  };
+
+  if (src.original) {
+    const pages = await decodeImage(src.original.bytes, src.original.format);
+    const img = pages[ref.index];
+    const [x0, y0, x1, y1] = page.view;
+    ctx.imageSmoothingEnabled = false;
+    drawInPageSpace(img, x0, y0, x1 - x0, y1 - y0, 0);
+    ctx.imageSmoothingEnabled = true;
+  } else {
+    await page.render({ canvas, viewport: vp, background: opaque ? "#fff" : "rgba(0,0,0,0)" } as any).promise;
+  }
+
+  for (const s of ref.stamps) {
+    const png = stampImages.get(s.imageId);
+    if (!png) continue;
+    const bmp = await bitmapFromPng(png);
+    drawInPageSpace(bmp, s.x, s.y, s.width, s.height, s.rotation);
+    bmp.close();
+  }
+  return canvas;
 }

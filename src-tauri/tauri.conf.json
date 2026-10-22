@@ -28,8 +28,8 @@
     "active": true,
     "targets": "all",
     "category": "Productivity",
-    "shortDescription": "View, combine, organize and sign PDFs",
-    "longDescription": "Unacro is a small, fast, open-source PDF tool for everyday work: view PDFs, combine documents, reorder and rotate pages, add your signature, and export to Markdown.",
+    "shortDescription": "View PDFs, images and 3D models; combine, organize and sign",
+    "longDescription": "Unacro is a small, fast, open-source viewer for PDFs, screenshots, images and STL models. Combine documents, reorder and rotate pages, add your signature, convert images, and export PDFs to Markdown.",
     "copyright": "MIT License",
     "icon": [
       "icons/32x32.png",
@@ -49,6 +49,98 @@
         ],
         "name": "PDF document",
         "role": "Editor",
+        "rank": "Alternate"
+      },
+      {
+        "ext": [
+          "jpg",
+          "jpeg",
+          "jpe",
+          "jfif"
+        ],
+        "mimeType": "image/jpeg",
+        "contentTypes": [
+          "public.jpeg"
+        ],
+        "name": "JPEG image",
+        "role": "Editor",
+        "rank": "Alternate"
+      },
+      {
+        "ext": [
+          "png"
+        ],
+        "mimeType": "image/png",
+        "contentTypes": [
+          "public.png"
+        ],
+        "name": "PNG image",
+        "role": "Editor",
+        "rank": "Alternate"
+      },
+      {
+        "ext": [
+          "gif"
+        ],
+        "mimeType": "image/gif",
+        "contentTypes": [
+          "com.compuserve.gif"
+        ],
+        "name": "GIF image",
+        "role": "Viewer",
+        "rank": "Alternate"
+      },
+      {
+        "ext": [
+          "heic",
+          "heif",
+          "hif"
+        ],
+        "mimeType": "image/heic",
+        "contentTypes": [
+          "public.heic",
+          "public.heif"
+        ],
+        "name": "HEIC image",
+        "role": "Viewer",
+        "rank": "Alternate"
+      },
+      {
+        "ext": [
+          "tif",
+          "tiff"
+        ],
+        "mimeType": "image/tiff",
+        "contentTypes": [
+          "public.tiff"
+        ],
+        "name": "TIFF image",
+        "role": "Editor",
+        "rank": "Alternate"
+      },
+      {
+        "ext": [
+          "bmp",
+          "dib"
+        ],
+        "mimeType": "image/bmp",
+        "contentTypes": [
+          "com.microsoft.bmp"
+        ],
+        "name": "BMP image",
+        "role": "Editor",
+        "rank": "Alternate"
+      },
+      {
+        "ext": [
+          "stl"
+        ],
+        "mimeType": "model/stl",
+        "contentTypes": [
+          "public.standard-tesselated-geometry-format"
+        ],
+        "name": "STL 3D model",
+        "role": "Viewer",
         "rank": "Alternate"
       }
     ],
