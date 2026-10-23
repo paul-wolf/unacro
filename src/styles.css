@@ -418,3 +418,34 @@ button { font: inherit; color: inherit; }
 #app.drawing .page, #app.drawing .page * { cursor: crosshair !important; }
 #app.drawing .textLayer { pointer-events: none; }
 #app.drawing .mark-hit, #app.drawing .mark-handle { pointer-events: none; }
+
+/* ---------------------------------------------------------------- JPEG quality dialog */
+
+.q-dialog { display: flex; flex-direction: column; gap: 10px; }
+.q-row { display: flex; align-items: center; gap: 10px; }
+.q-slider { flex: 1; accent-color: var(--accent); }
+.q-value { min-width: 40px; text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }
+
+/* ---------------------------------------------------------------- crop */
+
+.page { overflow: hidden; }
+.page-content { position: absolute; left: 0; top: 0; }
+.thumb-frame { overflow: hidden; }
+.thumb-content { position: absolute; left: 0; top: 0; }
+.thumb-content .marks { position: absolute; inset: 0; }
+.crop-box {
+  position: absolute; z-index: 6; pointer-events: none;
+  outline: 1.5px dashed #fff; box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.5), 0 0 0 100000px rgba(0, 0, 0, 0.45);
+}
+.crop-handle {
+  position: absolute; width: 12px; height: 12px; background: #fff; border: 1.5px solid var(--accent); border-radius: 2px;
+  pointer-events: auto;
+}
+.crop-handle.c0 { left: -7px; top: -7px; cursor: nwse-resize; }
+.crop-handle.c1 { right: -7px; top: -7px; cursor: nesw-resize; }
+.crop-handle.c2 { right: -7px; bottom: -7px; cursor: nwse-resize; }
+.crop-handle.c3 { left: -7px; bottom: -7px; cursor: nesw-resize; }
+.markup-bar .apply-crop { display: none; margin-right: 8px; }
+.markup-bar.has-crop-draft .apply-crop { display: inline-block; }
+#app.drawing .page .crop-handle.c0, #app.drawing .page .crop-handle.c2 { cursor: nwse-resize !important; }
+#app.drawing .page .crop-handle.c1, #app.drawing .page .crop-handle.c3 { cursor: nesw-resize !important; }

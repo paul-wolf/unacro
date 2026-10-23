@@ -2,11 +2,14 @@
 
 import { buildPdf } from "./core/build";
 import { pagesToMarkdown } from "./core/markdown";
-import { clonePages, movePages, normRotation, pagesForSource, uid, type Mark, type MarkType, type PageRef, type Stamp } from "./core/model";
+import { clonePages, movePages, normRotation, pagesForSource, uid, type Crop, type Mark, type MarkType, type PageRef, type Stamp } from "./core/model";
+
+type Tool = "select" | MarkType | "crop";
 import { MARK_COLORS, MARK_WIDTHS, arrowGeometry } from "./core/marks";
-import { Source, Sources, displaySize, flattenPage, renderInto, renderTextLayer, totalRotation, viewportFor } from "./pdf";
+import { Source, Sources, cropWindow, displaySize, flattenPage, renderInto, renderTextLayer, totalRotation, viewportFor } from "./pdf";
 import {
   IMAGE_LABEL,
+  IMAGE_SAVE_EXT,
   WRITABLE_IMAGE_FORMATS,
   detect,
   replaceExt,
@@ -50,6 +53,8 @@ interface Doc {
   markup: boolean;
   /** Snapshot of `pages` when the document was last copied to the clipboard. */
   copied: string | null;
+  /** For a new, never-saved document made from another file: where Save should start. */
+  nearPath: string | null;
 }
 
 interface PageEl {
@@ -58,6 +63,8 @@ interface PageEl {
   text: HTMLDivElement;
   stamps: HTMLDivElement;
   marks: SVGSVGElement;
+  /** Holds the full page; shifted inside `el` when the page is cropped. */
+  content: HTMLDivElement;
   key: string;
   rendered: string | null;
   visible: boolean;
@@ -72,6 +79,7 @@ const PAGE_GAP = 16;
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 const MARKUP_KEY = "unacro.markup";
+const JPEG_QUALITY_KEY = "unacro.jpegQuality";
 
 const snapshot = (pages: PageRef[]) => JSON.stringify(pages);
 const isDirty = (d: Doc) => snapshot(d.pages) !== d.saved;
@@ -85,7 +93,9 @@ export class App {
   private placing: Signature | null = null;
   private selectedStamp: string | null = null;
   private selectedMark: string | null = null;
-  private tool: "select" | MarkType = "select";
+  private tool: Tool = "select";
+  /** A crop rectangle being drawn, in page-content CSS px. */
+  private cropDraft: { pageId: string; l: number; t: number; w: number; h: number } | null = null;
   private markColor = MARK_COLORS[0];
   private markWidth = MARK_WIDTHS[1];
   private markupBar = h("div", { class: "markup-bar", role: "toolbar", "aria-label": "Markup" });
@@ -183,6 +193,7 @@ export class App {
       h("div", { class: "sep" }),
       btn("sign", "Add a signature", () => this.showSignMenu(this.buttons.sign), "sign", "Sign"),
       btn("markup", "Show or hide the markup tools", () => this.toggleMarkup(), "pen", "Markup"),
+      btn("convert", "Open a copy in another format", () => this.showConvertMenu(this.buttons.convert), "convert", "Convert"),
       btn("md", "Markdown", () => this.showMarkdownMenu(this.buttons.md), "md", "Markdown"),
       h("div", { class: "spacer" }),
       btn("zoomout", `Zoom out (${MOD}−)`, () => this.zoomBy(1 / 1.2), "minus"),
@@ -234,6 +245,7 @@ export class App {
       view3d: null,
       markup: !!extra.imageFormat,
       copied: null,
+      nearPath: null,
       id: uid("d"),
       name,
       path,
@@ -371,6 +383,8 @@ export class App {
     this.active = doc;
     this.selectedStamp = null;
     this.selectedMark = null;
+    this.cropDraft = null;
+    for (const b of this.pagesHost.querySelectorAll(".crop-box")) b.remove();
     this.placing = null;
     this.clearSearch(false);
     this.render(true);
@@ -446,10 +460,18 @@ export class App {
     }
     const problem = this.imageSaveProblem(doc, format);
     if (problem) throw new Error(problem);
+    // An untouched image saved in its own format is written byte for byte: no
+    // re-compression, and its metadata (EXIF) survives.
+    const ref = doc.pages[0];
+    const original = this.sources.get(ref.sourceId).original;
+    if (original && original.format === format && original.pointsPerPixel.length === 1 && !ref.rotation && !ref.stamps.length && !ref.marks.length && !ref.crop) {
+      await this.platform.write(path, original.bytes);
+      return;
+    }
     const keepsAlpha = format === "png" || format === "tiff";
-    const canvas = await flattenPage(this.sources, doc.pages[0], this.images, !keepsAlpha);
+    const canvas = await flattenPage(this.sources, ref, this.images, !keepsAlpha);
     try {
-      await this.platform.write(path, await encodeCanvas(canvas, format));
+      await this.platform.write(path, await encodeCanvas(canvas, format, this.jpegQuality()));
     } finally {
       canvas.width = 0;
       canvas.height = 0;
@@ -509,7 +531,7 @@ export class App {
   /** Save to a new file; the document now lives there. */
   async saveAs(doc = this.active): Promise<boolean> {
     if (!doc || doc.kind === "model") return false;
-    const path = await this.platform.pickSavePath(this.suggestedName(doc), this.saveKind(doc), doc.path);
+    const path = await this.platform.pickSavePath(this.suggestedName(doc), this.saveKind(doc), doc.path ?? doc.nearPath);
     if (!path) return false;
     try {
       await this.writeTo(doc, path);
@@ -534,7 +556,7 @@ export class App {
     const suggested = asPdf ? replaceExt(doc.name, "pdf") : this.suggestedName(doc);
     const dot = suggested.lastIndexOf(".");
     const name = asPdf ? suggested : `${suggested.slice(0, dot)} copy${suggested.slice(dot)}`;
-    const path = await this.platform.pickSavePath(name, asPdf ? "pdf" : this.saveKind(doc), doc.path);
+    const path = await this.platform.pickSavePath(name, asPdf ? "pdf" : this.saveKind(doc), doc.path ?? doc.nearPath);
     if (!path) return;
     try {
       await this.writeTo(doc, path);
@@ -557,7 +579,7 @@ export class App {
     const doc = this.active;
     if (!doc) return;
     const name = replaceExt(doc.name, "md");
-    const path = await this.platform.pickSavePath(name, "md", doc.path);
+    const path = await this.platform.pickSavePath(name, "md", doc.path ?? doc.nearPath);
     if (!path) return;
     try {
       const md = await this.markdownFor(doc);
@@ -599,6 +621,7 @@ export class App {
     d.pages = d.undo.pop()!;
     this.selectedStamp = null;
     this.selectedMark = null;
+    this.clearCropDraft();
     this.render();
   }
 
@@ -609,6 +632,7 @@ export class App {
     d.pages = d.redo.pop()!;
     this.selectedStamp = null;
     this.selectedMark = null;
+    this.clearCropDraft();
     this.render();
   }
 
@@ -964,7 +988,7 @@ export class App {
   private renderToolbarState() {
     const d = this.active;
     const pages = d?.kind === "pages";
-    for (const k of ["save", "insert", "rotl", "rotr", "delete", "sign", "md", "markup"]) this.buttons[k].disabled = !pages;
+    for (const k of ["save", "insert", "rotl", "rotr", "delete", "sign", "md", "markup", "convert"]) this.buttons[k].disabled = !pages;
     this.buttons.markup.classList.toggle("active", !!(pages && d?.markup));
     this.buttons.markup.setAttribute("aria-pressed", String(!!(pages && d?.markup)));
     for (const k of ["zoomin", "zoomout"]) this.buttons[k].disabled = !d;
@@ -1095,12 +1119,12 @@ export class App {
     const keep = new Set<string>();
     const els: HTMLElement[] = [];
     d.pages.forEach((ref, i) => {
-      const key = `${ref.sourceId}:${ref.index}:${ref.rotation}`;
+      const key = `${ref.sourceId}:${ref.index}:${ref.rotation}:${JSON.stringify(ref.crop ?? null)}`;
       let t = this.thumbEls.get(ref.id);
       if (!t || t.key !== key) {
         if (t) this.thumbObserver.unobserve(t.el);
         const canvas = h("canvas", { class: "thumb-canvas" });
-        const el = h("div", { class: "thumb", dataset: { id: ref.id } }, h("div", { class: "thumb-frame" }, canvas), h("div", { class: "thumb-num" }));
+        const el = h("div", { class: "thumb", dataset: { id: ref.id } }, h("div", { class: "thumb-frame" }, h("div", { class: "thumb-content" }, canvas)), h("div", { class: "thumb-num" }));
         el.addEventListener("pointerdown", (e) => this.onThumbPointerDown(e, ref.id));
         el.addEventListener("contextmenu", (e) => {
           e.preventDefault();
@@ -1116,6 +1140,7 @@ export class App {
       const frame = t.el.firstElementChild as HTMLElement;
       frame.style.width = `${Math.round(size.width * s)}px`;
       frame.style.height = `${Math.round(size.height * s)}px`;
+      this.placeContent(ref, frame.firstElementChild as HTMLElement, s);
       (t.el.lastElementChild as HTMLElement).textContent = String(i + 1);
       this.renderThumbMarks(ref);
       keep.add(ref.id);
@@ -1171,7 +1196,7 @@ export class App {
     const keep = new Set<string>();
     const els: HTMLElement[] = [];
     for (const ref of d.pages) {
-      const key = `${ref.sourceId}:${ref.index}:${ref.rotation}:${this.scale.toFixed(4)}`;
+      const key = `${ref.sourceId}:${ref.index}:${ref.rotation}:${this.scale.toFixed(4)}:${JSON.stringify(ref.crop ?? null)}`;
       let pe = this.pageEls.get(ref.id);
       if (!pe) {
         const canvas = h("canvas", { class: "page-canvas" });
@@ -1179,9 +1204,10 @@ export class App {
         const stamps = h("div", { class: "stamps" });
         const marks = document.createElementNS(SVG_NS, "svg") as SVGSVGElement;
         marks.classList.add("marks");
-        const el = h("div", { class: "page", dataset: { id: ref.id } }, canvas, text, marks, stamps);
+        const content = h("div", { class: "page-content" }, canvas, text, marks, stamps);
+        const el = h("div", { class: "page", dataset: { id: ref.id } }, content);
         el.addEventListener("pointerdown", (e) => this.onPagePointerDown(e, ref.id));
-        pe = { el, canvas, text, stamps, marks, key: "", rendered: null, visible: false };
+        pe = { el, canvas, text, stamps, marks, content, key: "", rendered: null, visible: false };
         this.pageEls.set(ref.id, pe);
         this.pageObserver.observe(el);
       }
@@ -1190,6 +1216,7 @@ export class App {
         const size = displaySize(this.sources, ref);
         pe.el.style.width = `${Math.floor(size.width * this.scale)}px`;
         pe.el.style.height = `${Math.floor(size.height * this.scale)}px`;
+        this.placeContent(ref, pe.content, this.scale);
         if (pe.visible) void this.renderPage(ref.id);
       }
       keep.add(ref.id);
@@ -1212,6 +1239,16 @@ export class App {
       this.currentPageId = d.pages[0]?.id ?? null;
     }
     this.onViewerScroll();
+  }
+
+  /** Size the full-page layer and shift it so only the cropped window shows. */
+  private placeContent(ref: PageRef, content: HTMLElement, scale: number) {
+    const full = viewportFor(this.sources, ref, scale);
+    const win = cropWindow(this.sources, ref, scale);
+    content.style.width = `${full.width}px`;
+    content.style.height = `${full.height}px`;
+    content.style.left = `${-(win?.left ?? 0)}px`;
+    content.style.top = `${-(win?.top ?? 0)}px`;
   }
 
   private onPagesVisible(entries: IntersectionObserverEntry[]) {
@@ -1384,8 +1421,12 @@ export class App {
     if (!d || !ref) return;
     if (this.placing && e.button === 0) {
       e.preventDefault();
-      const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
-      this.placeAt(ref, e.clientX - r.left, e.clientY - r.top);
+      this.placeAt(ref, ...this.pointIn(e, ref.id));
+      return;
+    }
+    if (e.button === 0 && this.tool === "crop" && d.markup) {
+      e.preventDefault();
+      this.cropPointer(e, ref);
       return;
     }
     if (e.button === 0 && this.tool !== "select" && d.markup) {
@@ -1546,6 +1587,7 @@ export class App {
       { label: "Save As…", shortcut: `${SHIFT}${MOD}S`, disabled: !pages, action: () => void this.saveAs() },
       { label: "Save a Copy…", disabled: !pages, action: () => void this.saveCopy() },
       ...(d?.imageFormat ? [{ label: "Export as PDF…", action: () => void this.saveCopy(d, true) }] : []),
+      { label: "Convert", disabled: !pages, submenu: this.convertMenuItems() },
       { separator: true, label: "" },
       { label: "Export as Markdown…", disabled: !pages || !!d?.imageFormat, action: () => void this.exportMarkdown() },
       { separator: true, label: "" },
@@ -1628,6 +1670,8 @@ export class App {
         { label: "Insert Pages from PDF…", action: () => void this.insertFromFile() },
         { label: n > 1 ? `Open ${n} Pages as New Document` : "Open Page as New Document", disabled: !sel, action: () => this.extractSelection() },
         { separator: true, label: "" },
+        { label: "Remove Crop", disabled: !d.pages.some((p) => d.selection.has(p.id) && p.crop), action: () => this.removeCrop() },
+        { separator: true, label: "" },
         { label: n > 1 ? `Delete ${n} Pages` : "Delete Page", shortcut: "Del", disabled: !sel, action: () => this.deleteSelected() },
       ],
       x,
@@ -1675,6 +1719,7 @@ export class App {
     if (e.key === "Escape") {
       closeMenus();
       if (this.placing) this.stopPlacing();
+      else if (this.cropDraft) this.clearCropDraft();
       else if (this.tool !== "select") this.setTool("select");
       else if (this.selectedMark) this.selectMark(null);
       else if (this.selectedStamp) {
@@ -1732,8 +1777,13 @@ export class App {
       return;
     }
     if (inInput) return;
+    if (e.key === "Enter" && this.cropDraft) {
+      e.preventDefault();
+      this.applyCrop();
+      return;
+    }
     if (this.active?.kind === "pages" && this.active.markup && !e.altKey && !e.shiftKey) {
-      const tools: Record<string, "select" | MarkType> = { v: "select", r: "rect", o: "oval", a: "arrow" };
+      const tools: Record<string, Tool> = { v: "select", r: "rect", o: "oval", a: "arrow", c: "crop" };
       if (tools[k]) {
         e.preventDefault();
         this.setTool(tools[k]);
@@ -1752,6 +1802,122 @@ export class App {
         this.deleteSelected();
       }
     }
+  }
+
+  // ================================================================ convert
+
+  private jpegQuality(): number {
+    try {
+      const q = Number(localStorage.getItem(JPEG_QUALITY_KEY));
+      if (q >= 0.3 && q <= 1) return q;
+    } catch {
+      /* default */
+    }
+    return 0.85;
+  }
+
+  private convertMenuItems(): MenuItem[] {
+    const d = this.active;
+    const many = (d?.pages.length ?? 0) > 1;
+    const page = many ? "Current Page as " : "";
+    const items: MenuItem[] = (["jpeg", "png", "tiff", "bmp"] as ImageFormat[]).map((f) => ({
+      label: `${page}${IMAGE_LABEL[f]}`,
+      action: () => void this.convertTo(f),
+    }));
+    if (d?.imageFormat || many) {
+      items.push({ separator: true, label: "" }, { label: many ? "Whole Document as PDF" : "PDF", action: () => void this.convertTo("pdf") });
+    }
+    items.push(
+      { separator: true, label: "" },
+      { label: `JPEG Quality… (${Math.round(this.jpegQuality() * 100)}%)`, action: () => void this.jpegQualityDialog() },
+    );
+    return items;
+  }
+
+  private showConvertMenu(anchor: HTMLElement) {
+    if (this.active?.kind !== "pages") return;
+    const r = anchor.getBoundingClientRect();
+    openMenu(this.convertMenuItems(), r.left, r.bottom + 4);
+  }
+
+  /** Open a copy of the current image (or page) in another format, as a new unsaved tab. */
+  async convertTo(format: ImageFormat | "pdf") {
+    const d = this.active;
+    if (d?.kind !== "pages") return;
+    const near = d.path ?? d.nearPath;
+    const base = d.name.replace(/\.[^.]+$/, "");
+    if (format === "pdf") {
+      const doc = this.newDoc(`${base}.pdf`, null, clonePages(d.pages), false, { nearPath: near });
+      this.activate(doc);
+      return;
+    }
+    const id = d.pages.length === 1 ? d.pages[0].id : d.selection.size === 1 ? [...d.selection][0] : this.currentPageId;
+    const ref = d.pages.find((p) => p.id === id) ?? d.pages[0];
+    const index = d.pages.indexOf(ref);
+    const name = d.pages.length > 1 ? `${base} page ${index + 1}.${IMAGE_SAVE_EXT[format]}` : `${base}.${IMAGE_SAVE_EXT[format]}`;
+    try {
+      const opaque = format === "jpeg" || format === "bmp";
+      const canvas = await flattenPage(this.sources, ref, this.images, opaque);
+      const bytes = await encodeCanvas(canvas, format, this.jpegQuality());
+      canvas.width = canvas.height = 0;
+      const src = await Source.loadImage(name, bytes, format);
+      this.sources.add(src);
+      const doc = this.newDoc(name, null, pagesForSource(src.id, src.pageCount), false, { imageFormat: format, nearPath: near });
+      this.activate(doc);
+      const size = bytes.length > 1048576 ? `${(bytes.length / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes.length / 1024))} KB`;
+      toast(`Converted to ${IMAGE_LABEL[format]} (${size}). Save to keep it.`);
+    } catch (e: any) {
+      toast(`Couldn't convert: ${e?.message ?? e}`, "error");
+    }
+  }
+
+  /** Pick the JPEG quality used for conversions and JPEG saves, with a live size estimate. */
+  private async jpegQualityDialog() {
+    const d = this.active;
+    let q = Math.round(this.jpegQuality() * 100);
+    const value = h("span", { class: "q-value" }, `${q}%`);
+    const estimate = h("span", { class: "muted" }, "");
+    const slider = h("input", { type: "range", min: "40", max: "100", step: "1", value: String(q), class: "q-slider", "aria-label": "JPEG quality" });
+    const body = h(
+      "div",
+      { class: "q-dialog" },
+      h("p", {}, "Used when converting to JPEG and when saving JPEG images. Higher means better quality and bigger files."),
+      h("div", { class: "q-row" }, h("span", { class: "muted" }, "Smaller"), slider, h("span", { class: "muted" }, "Better"), value),
+      estimate,
+    );
+    // Estimate the size by encoding the current image (or page) at the chosen quality.
+    let sample: HTMLCanvasElement | null = null;
+    let timer = 0;
+    const ref = d?.kind === "pages" ? d.pages.find((p) => p.id === this.currentPageId) ?? d.pages[0] : null;
+    const update = () => {
+      q = Number(slider.value);
+      value.textContent = `${q}%`;
+      clearTimeout(timer);
+      if (!ref) return;
+      timer = window.setTimeout(async () => {
+        sample ??= await flattenPage(this.sources, ref, this.images, true);
+        const bytes = await encodeCanvas(sample, "jpeg", q / 100);
+        const kb = bytes.length / 1024;
+        estimate.textContent = `This ${d!.pages.length > 1 ? "page" : "image"} as a JPEG: about ${kb > 1024 ? `${(kb / 1024).toFixed(1)} MB` : `${Math.max(1, Math.round(kb))} KB`}`;
+      }, 150);
+    };
+    slider.addEventListener("input", update);
+    update();
+    const ok = await modal({
+      title: "JPEG quality",
+      body,
+      cancelValue: false,
+      buttons: [{ label: "Cancel", value: false }, { label: "Done", value: true, kind: "primary" }],
+    });
+    clearTimeout(timer);
+    if (sample) (sample as HTMLCanvasElement).width = 0;
+    if (!ok) return;
+    try {
+      localStorage.setItem(JPEG_QUALITY_KEY, String(q / 100));
+    } catch {
+      /* storage unavailable */
+    }
+    toast(`JPEG quality set to ${q}%`);
   }
 
   // ================================================================ markup
@@ -1776,7 +1942,7 @@ export class App {
 
   private buildMarkupBar() {
     this.loadMarkupPrefs();
-    const tool = (t: "select" | MarkType, label: string, iconName: string, key: string) =>
+    const tool = (t: Tool, label: string, iconName: string, key: string) =>
       h("button", { class: "tool", title: `${label} (${key})`, "aria-label": label, dataset: { tool: t }, onclick: () => this.setTool(t) }, icon(iconName));
     const swatches = MARK_COLORS.map((c) =>
       h("button", {
@@ -1802,12 +1968,14 @@ export class App {
       tool("rect", "Rectangle", "rect", "R"),
       tool("oval", "Oval", "oval", "O"),
       tool("arrow", "Arrow", "arrow", "A"),
+      tool("crop", "Crop", "crop", "C"),
       h("div", { class: "sep" }),
       h("div", { class: "swatches" }, ...swatches),
       h("div", { class: "sep" }),
       ...widths,
       h("div", { class: "spacer" }),
       h("span", { class: "markup-hint" }),
+      h("button", { class: "btn primary small apply-crop", onclick: () => this.applyCrop() }, "Crop"),
       h("button", { class: "tool with-text", title: `Copy the image with its markup (${MOD}C)`, onclick: () => void this.copyImage() }, icon("copy"), h("span", {}, "Copy")),
     );
   }
@@ -1821,7 +1989,16 @@ export class App {
     for (const b of this.markupBar.querySelectorAll<HTMLElement>("[data-color]")) b.classList.toggle("active", b.dataset.color === color);
     for (const b of this.markupBar.querySelectorAll<HTMLElement>("[data-width]")) b.classList.toggle("active", Number(b.dataset.width) === width);
     const hint = this.markupBar.querySelector(".markup-hint");
-    if (hint) {
+    this.markupBar.classList.toggle("has-crop-draft", !!this.cropDraft);
+    if (hint && this.tool === "crop") {
+      const draft = this.cropDraft;
+      const ref = draft ? d?.pages.find((p) => p.id === draft.pageId) : undefined;
+      const k = ref ? this.sources.get(ref.sourceId).original?.pointsPerPixel[ref.index] : undefined;
+      const units = (v: number) => Math.round(k ? v / this.scale / k : v / this.scale);
+      hint.textContent = draft
+        ? `${units(draft.w)} × ${units(draft.h)} ${k ? "px" : "pt"}. Adjust the box, then press Enter or click Crop. Esc to cancel.`
+        : `Drag a box around the part to keep.`;
+    } else if (hint) {
       hint.textContent = !d || d.kind !== "pages" ? "" : this.tool !== "select"
         ? `Drag on the ${d.imageFormat ? "image" : "page"} to draw. Shift for squares, circles and 45° arrows. Esc to stop.`
         : sel ? "Drag to move, drag a handle to resize. Delete to remove." : "";
@@ -1840,7 +2017,7 @@ export class App {
     this.render();
   }
 
-  setTool(t: "select" | MarkType) {
+  setTool(t: Tool) {
     const d = this.active;
     if (d?.kind !== "pages") return;
     if (!d.markup) {
@@ -1848,6 +2025,7 @@ export class App {
       this.render();
     }
     this.tool = t;
+    if (t !== "crop") this.clearCropDraft();
     if (t !== "select") this.selectMark(null);
     if (this.placing) this.stopPlacing();
     this.renderMarkupBar();
@@ -1918,7 +2096,7 @@ export class App {
     if (!svg) {
       svg = document.createElementNS(SVG_NS, "svg") as SVGSVGElement;
       svg.classList.add("marks");
-      t.el.querySelector(".thumb-frame")!.append(svg);
+      t.el.querySelector(".thumb-content")!.append(svg);
     }
     const size = displaySize(this.sources, ref);
     svg.replaceChildren(...this.markNodes(ref, Math.min(THUMB_W / size.width, THUMB_H / size.height), false));
@@ -1975,7 +2153,7 @@ export class App {
   }
 
   private pointIn(e: PointerEvent, pageId: string): [number, number] {
-    const r = this.pageEls.get(pageId)!.el.getBoundingClientRect();
+    const r = this.pageEls.get(pageId)!.content.getBoundingClientRect();
     return [e.clientX - r.left, e.clientY - r.top];
   }
 
@@ -2075,6 +2253,108 @@ export class App {
     pageEl.addEventListener("pointermove", move);
     pageEl.addEventListener("pointerup", up);
     pageEl.addEventListener("pointercancel", up);
+  }
+
+  // ================================================================ crop
+
+  /** The page's visible area in page-content CSS px (the crop window, or the whole page). */
+  private visibleArea(ref: PageRef) {
+    const win = cropWindow(this.sources, ref, this.scale);
+    if (win) return win;
+    const vp = viewportFor(this.sources, ref, this.scale);
+    return { left: 0, top: 0, width: vp.width, height: vp.height };
+  }
+
+  private clearCropDraft() {
+    if (!this.cropDraft) return;
+    const pe = this.pageEls.get(this.cropDraft.pageId);
+    this.cropDraft = null;
+    pe?.content.querySelector(".crop-box")?.remove();
+    this.renderMarkupBar();
+  }
+
+  private renderCropDraft() {
+    const draft = this.cropDraft;
+    for (const b of this.pagesHost.querySelectorAll(".crop-box")) b.remove();
+    if (draft) {
+      const pe = this.pageEls.get(draft.pageId);
+      const box = h(
+        "div",
+        { class: "crop-box", style: { left: `${draft.l}px`, top: `${draft.t}px`, width: `${draft.w}px`, height: `${draft.h}px` } },
+        ...[0, 1, 2, 3].map((i) => h("div", { class: `crop-handle c${i}`, dataset: { corner: String(i) } })),
+      );
+      pe?.content.append(box);
+    }
+    this.renderMarkupBar();
+  }
+
+  /** Draw, move or resize the crop box. */
+  private cropPointer(e: PointerEvent, ref: PageRef) {
+    const area = this.visibleArea(ref);
+    const clampX = (x: number) => Math.min(area.left + area.width, Math.max(area.left, x));
+    const clampY = (y: number) => Math.min(area.top + area.height, Math.max(area.top, y));
+    const start = this.pointIn(e, ref.id);
+    const target = e.target as HTMLElement;
+    const draft = this.cropDraft?.pageId === ref.id ? { ...this.cropDraft } : null;
+    const corner = target.closest<HTMLElement>(".crop-handle")?.dataset.corner;
+    const inside = draft && start[0] >= draft.l && start[0] <= draft.l + draft.w && start[1] >= draft.t && start[1] <= draft.t + draft.h;
+    let mode: "new" | "move" | "resize" = corner !== undefined && draft ? "resize" : inside ? "move" : "new";
+    if (this.cropDraft && this.cropDraft.pageId !== ref.id) this.clearCropDraft();
+    // For a resize, the corner opposite the handle stays put.
+    let fixed: [number, number] = start;
+    if (mode === "resize" && draft) {
+      const c = Number(corner);
+      fixed = [c === 1 || c === 2 ? draft.l : draft.l + draft.w, c >= 2 ? draft.t : draft.t + draft.h];
+    }
+    const pageEl = this.pageEls.get(ref.id)!.el;
+    pageEl.setPointerCapture(e.pointerId);
+    const move = (ev: PointerEvent) => {
+      const p = this.pointIn(ev, ref.id);
+      if (mode === "move" && draft) {
+        const l = Math.min(area.left + area.width - draft.w, Math.max(area.left, draft.l + p[0] - start[0]));
+        const t = Math.min(area.top + area.height - draft.h, Math.max(area.top, draft.t + p[1] - start[1]));
+        this.cropDraft = { ...draft, l, t };
+      } else {
+        const a = mode === "new" ? start : fixed;
+        const bx = clampX(p[0]), by = clampY(p[1]);
+        const ax = clampX(a[0]), ay = clampY(a[1]);
+        this.cropDraft = { pageId: ref.id, l: Math.min(ax, bx), t: Math.min(ay, by), w: Math.abs(bx - ax), h: Math.abs(by - ay) };
+      }
+      this.renderCropDraft();
+    };
+    const up = () => {
+      pageEl.removeEventListener("pointermove", move);
+      pageEl.removeEventListener("pointerup", up);
+      pageEl.removeEventListener("pointercancel", up);
+      const dr = this.cropDraft;
+      if (dr && (dr.w < 4 || dr.h < 4)) this.clearCropDraft();
+    };
+    pageEl.addEventListener("pointermove", move);
+    pageEl.addEventListener("pointerup", up);
+    pageEl.addEventListener("pointercancel", up);
+  }
+
+  applyCrop() {
+    const d = this.active;
+    const draft = this.cropDraft;
+    const ref = draft ? d?.pages.find((p) => p.id === draft.pageId) : undefined;
+    if (!d || !draft || !ref) return;
+    const vp = viewportFor(this.sources, ref, this.scale);
+    const [ax, ay] = vp.convertToPdfPoint(draft.l, draft.t);
+    const [bx, by] = vp.convertToPdfPoint(draft.l + draft.w, draft.t + draft.h);
+    const crop: Crop = { x1: Math.min(ax, bx), y1: Math.min(ay, by), x2: Math.max(ax, bx), y2: Math.max(ay, by) };
+    this.cropDraft = null;
+    this.tool = "select";
+    for (const b of this.pagesHost.querySelectorAll(".crop-box")) b.remove();
+    this.commit(d, d.pages.map((p) => (p.id === ref.id ? { ...p, crop } : p)));
+    toast("Cropped. Undo to bring it back; saving makes it permanent for images.");
+  }
+
+  removeCrop() {
+    const d = this.active;
+    if (!d) return;
+    const ids = this.targetIds(d);
+    this.commit(d, d.pages.map((p) => (ids.has(p.id) && p.crop ? { ...p, crop: null } : p)));
   }
 
   // ================================================================ copy to clipboard

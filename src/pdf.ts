@@ -144,9 +144,22 @@ export function totalRotation(sources: Sources, ref: PageRef) {
 
 /** Displayed size in points, including all rotation. */
 export function displaySize(sources: Sources, ref: PageRef) {
+  if (ref.crop) {
+    const w = ref.crop.x2 - ref.crop.x1, h = ref.crop.y2 - ref.crop.y1;
+    return totalRotation(sources, ref) % 180 ? { width: h, height: w } : { width: w, height: h };
+  }
   const info = sources.get(ref.sourceId).info[ref.index];
   const swap = ref.rotation % 180 !== 0;
   return swap ? { width: info.height, height: info.width } : { width: info.width, height: info.height };
+}
+
+/** Where a cropped page's visible window sits inside the full page at `scale` (CSS px), or null if not cropped. */
+export function cropWindow(sources: Sources, ref: PageRef, scale: number) {
+  if (!ref.crop) return null;
+  const vp = viewportFor(sources, ref, scale);
+  const [ax, ay] = vp.convertToViewportPoint(ref.crop.x1, ref.crop.y1);
+  const [bx, by] = vp.convertToViewportPoint(ref.crop.x2, ref.crop.y2);
+  return { left: Math.min(ax, bx), top: Math.min(ay, by), width: Math.abs(bx - ax), height: Math.abs(by - ay) };
 }
 
 export function viewportFor(sources: Sources, ref: PageRef, scale: number): PageViewport {
@@ -287,5 +300,13 @@ export async function flattenPage(
     drawInPageSpace(bmp, s.x, s.y, s.width, s.height, s.rotation);
     bmp.close();
   }
-  return canvas;
+
+  const win = cropWindow(sources, ref, scale);
+  if (!win) return canvas;
+  const out = document.createElement("canvas");
+  out.width = Math.max(1, Math.round(win.width));
+  out.height = Math.max(1, Math.round(win.height));
+  out.getContext("2d")!.drawImage(canvas, Math.round(win.left), Math.round(win.top), out.width, out.height, 0, 0, out.width, out.height);
+  canvas.width = canvas.height = 0;
+  return out;
 }

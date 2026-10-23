@@ -129,6 +129,10 @@ export async function buildPdf({ pages, sources, images }: BuildInput): Promise<
       const current = page.getRotation().angle;
       page.setRotation(degrees((((current + ref.rotation) % 360) + 360) % 360));
     }
+    if (ref.crop) {
+      const { x1, y1, x2, y2 } = ref.crop;
+      page.setCropBox(x1, y1, x2 - x1, y2 - y1);
+    }
     for (const m of ref.marks ?? []) drawMark(page, m);
     for (const s of ref.stamps) {
       let img = embedded.get(s.imageId);

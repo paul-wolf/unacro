@@ -107,10 +107,10 @@ export async function imagePagesToPdf(pages: HTMLCanvasElement[], format: ImageF
   return { pdf: await doc.save(), pointsPerPixel };
 }
 
-/** Encode a finished canvas in a writable image format. */
-export async function encodeCanvas(canvas: HTMLCanvasElement, format: ImageFormat): Promise<Uint8Array> {
+/** Encode a finished canvas in a writable image format. `quality` (0–1) applies to JPEG. */
+export async function encodeCanvas(canvas: HTMLCanvasElement, format: ImageFormat, quality = 0.85): Promise<Uint8Array> {
   if (format === "png") return toBytes(canvas, "image/png");
-  if (format === "jpeg") return toBytes(canvas, "image/jpeg", 0.92);
+  if (format === "jpeg") return toBytes(canvas, "image/jpeg", quality);
   const { width, height } = canvas;
   const rgba = canvas.getContext("2d")!.getImageData(0, 0, width, height).data;
   if (format === "bmp") return encodeBmp(rgba, width, height);

@@ -58,3 +58,13 @@ describe("marks in saved PDFs", () => {
     expect(c.marks[0].x2).toBe(150);
   });
 });
+
+describe("crop in saved PDFs", () => {
+  it("sets the crop box", async () => {
+    const { PDFDocument } = await import("pdf-lib");
+    const sources = new Map([["a", await labeledPdf("A", 1)]]);
+    const pages = pagesForSource("a", 1).map((p) => ({ ...p, crop: { x1: 40, y1: 300, x2: 260, y2: 450 } }));
+    const out = await PDFDocument.load(await buildPdf({ pages, sources, images: new Map() }));
+    expect(out.getPages()[0].getCropBox()).toEqual({ x: 40, y: 300, width: 220, height: 150 });
+  });
+});

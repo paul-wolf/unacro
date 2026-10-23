@@ -68,10 +68,9 @@ These are deliberately out of scope. They are not "maybe later".
 
 In rough order:
 
-1. **Speech bubbles with text**, then maybe plain text labels, highlight and freehand. (Rectangles, ovals and arrows are done.)
-2. **One-click conversion:** "Convert to JPEG/PNG" for images (especially HEIC), writing next to the original without a dialog, plus batch conversion of several files.
-3. **Crop** for images and screenshots.
-4. **HEIC on Linux.** It works on macOS through the system. On Linux it needs libheif, which is LGPL, so this needs a decision about the licensing principle (for example, using the system's libheif as an optional, dynamically loaded library).
+1. **Speech bubbles with text**, in a cleaner style than Preview's: a rounded rectangle with a short tail. Then maybe plain text labels, highlight and freehand. (Rectangles, ovals and arrows are done.)
+2. **Batch conversion** of several files at once. (Single-file Convert is done: it opens a new tab, and JPEG quality is set once.)
+3. **HEIC on Linux.** It works on macOS through the system. On Linux it needs libheif, which is LGPL, so this needs a decision about the licensing principle (for example, using the system's libheif as an optional, dynamically loaded library).
 
 ## Maybe later
 
@@ -88,7 +87,8 @@ Good ideas without a firm plan yet. Each needs a clear reason before it's built.
 ## Known limitations of the current approach
 
 - Saving a PDF rebuilds the page list. The file that contributes the most pages is kept as the base, so its bookmarks, form fields and metadata survive. Pages copied in from *other* files lose their form fields, and bookmarks pointing at deleted pages go nowhere. Tightening this up is required before 1.0.
-- Saving an edited image re-encodes it and drops its metadata (EXIF: camera, date, location). Unchanged images are never rewritten.
+- Saving an edited image (rotated, cropped, marked up or signed) re-encodes it and drops its metadata (EXIF: camera, date, location). Unchanged images are never rewritten, and saving an untouched image in its own format copies it byte for byte.
+- Crop is reversible until an image is saved. In PDFs it sets the page's crop box, so the hidden part is still in the file.
 - GIF and HEIC can be opened but not written. Animated GIFs show their first frame.
 - Password-protected PDFs can't be opened yet.
 - Markdown export ignores tables and multi-column layouts, and scans have no text to export.

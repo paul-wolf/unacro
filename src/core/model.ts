@@ -35,6 +35,14 @@ export interface Mark {
   width: number;
 }
 
+/** A crop rectangle in the source page's PDF user space (x1 < x2, y1 < y2). */
+export interface Crop {
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+}
+
 /** One page in a document: a reference to a page of some loaded source file. */
 export interface PageRef {
   id: string;
@@ -45,6 +53,8 @@ export interface PageRef {
   rotation: number;
   stamps: Stamp[];
   marks: Mark[];
+  /** Visible part of the page, if cropped. */
+  crop?: Crop | null;
 }
 
 let counter = 0;
