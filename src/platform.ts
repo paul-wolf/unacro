@@ -82,6 +82,12 @@ export interface Platform {
   writeClipboardText(text: string): Promise<void>;
   /** Put an image on the clipboard so it can be pasted into other apps. */
   writeClipboardImage(canvas: HTMLCanvasElement): Promise<void>;
+  /** Unacro's own small files (history, thumbnails). Missing files read as null. */
+  dataRead(name: string): Promise<Uint8Array | null>;
+  dataWrite(name: string, bytes: Uint8Array): Promise<void>;
+  dataDelete(name: string): Promise<void>;
+  /** Which of these paths are existing files. */
+  pathsExist(paths: string[]): Promise<boolean[]>;
   /** Whether recent-file paths survive a restart. */
   persistentPaths: boolean;
 }
@@ -150,6 +156,17 @@ async function tauriPlatform(): Promise<Platform> {
     baseName: baseNameOf,
     reveal: (p) => opener.revealItemInDir(p),
     initialPaths: () => invoke<string[]>("initial_paths"),
+    async dataRead(name) {
+      const buf = await invoke<ArrayBuffer>("data_read", { name });
+      return buf.byteLength ? new Uint8Array(buf) : null;
+    },
+    async dataWrite(name, bytes) {
+      await invoke("data_write", bytes, { headers: { "x-name": encodeURIComponent(name) } });
+    },
+    async dataDelete(name) {
+      await invoke("data_delete", { name });
+    },
+    pathsExist: (paths) => invoke<boolean[]>("paths_exist", { paths }),
     writeClipboardText: (text) => clipboard.writeText(text),
     async writeClipboardImage(canvas) {
       const { Image } = await import("@tauri-apps/api/image");
@@ -206,6 +223,7 @@ function keepHandle(h: Handle) {
   return key;
 }
 
+const memoryData = new Map<string, Uint8Array>();
 const hasFsAccess = typeof window !== "undefined" && "showOpenFilePicker" in window;
 
 function inputPick(multiple: boolean, accept: string): Promise<File[]> {
@@ -294,6 +312,33 @@ function browserPlatform(): Platform {
       return [];
     },
     async onOpenPaths() {},
+    // In a browser only the history list is kept (in localStorage); thumbnails live for the session.
+    async dataRead(name) {
+      if (memoryData.has(name)) return memoryData.get(name)!;
+      try {
+        const b64 = localStorage.getItem(`unacro.data.${name}`);
+        return b64 ? Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)) : null;
+      } catch {
+        return null;
+      }
+    },
+    async dataWrite(name, bytes) {
+      if (!name.endsWith(".json")) return void memoryData.set(name, bytes);
+      let bin = "";
+      for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+      localStorage.setItem(`unacro.data.${name}`, btoa(bin));
+    },
+    async dataDelete(name) {
+      for (const k of [...memoryData.keys()]) if (k === name || k.startsWith(`${name}/`)) memoryData.delete(k);
+      try {
+        localStorage.removeItem(`unacro.data.${name}`);
+      } catch {
+        /* ignore */
+      }
+    },
+    async pathsExist(paths) {
+      return paths.map((p) => handles.has(p));
+    },
     writeClipboardText: (text) => navigator.clipboard.writeText(text),
     async writeClipboardImage(canvas) {
       const blob = new Promise<Blob>((resolve, reject) =>

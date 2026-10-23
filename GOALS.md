@@ -39,7 +39,8 @@ Preview's file handling is the main frustration Unacro exists to fix. These are 
 - **No surprise autosave.** Nothing touches your file on disk until you save. Unsaved changes are clearly marked, and closing a changed document asks first.
 - **Saves are atomic.** Unacro writes to a temporary file and then renames it over the original. A crash mid-save can't leave you with half a file.
 - **Always know where a file is.** The full path is visible in the status bar, title bar and tab tooltip, and "Open Containing Folder" (on a tab's right-click menu, or by clicking the path in the status bar) opens your file manager with the file selected. After every save, a message shows the folder with "Show in Finder" / "Open Folder" and "Copy Path" buttons. The path can always be copied from the status bar.
-- **Many documents, one window.** Open documents are tabs in a single window, with a list of all tabs for quick switching. Thirty open files should feel no heavier than three, because pages render only when they're on screen.
+- **Many documents, one window, and it stays tidy.** Open documents are tabs in a single window. At most *n* files stay open (12 by default). Opening more quietly closes the least recently used tab, but never one that's pinned, has unsaved changes or was never saved. Nothing is lost: every file is in the Library.
+- **Find anything you've opened.** The Library lists every file opened in the last *m* months (6 by default) by recency, timeline (down to the last 5 minutes), folder or type, with search and thumbnails. Go to File (`⌘P`) jumps to any open or recent file by typing part of its name.
 - **Opening from the file manager adds a tab.** Double-clicking a file, "Open With", or dropping it on the app icon opens it in the running window. It never starts a second copy of the app.
 - **Drag and drop works the obvious way.** Drop a file on the window to open it. Drop it into the thumbnail sidebar to insert its pages at that spot.
 

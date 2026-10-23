@@ -83,6 +83,74 @@ fn percent_decode(s: &str) -> Result<String, String> {
     String::from_utf8(out).map_err(|e| e.to_string())
 }
 
+// ------------------------------------------------------------------ app data
+//
+// Unacro keeps its own small files (file history, thumbnails) in the platform's
+// app-data folder, e.g. ~/Library/Application Support/dev.unacro.app on macOS or
+// ~/.local/share/dev.unacro.app on Linux. Names are relative and can't escape it.
+
+fn valid_data_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .split('/')
+            .all(|part| !part.is_empty() && part != "." && part != ".." && !part.contains('\\') && !part.contains(':'))
+}
+
+fn data_path(app: &AppHandle, name: &str) -> Result<PathBuf, String> {
+    if !valid_data_name(name) {
+        return Err(format!("invalid data file name: {name}"));
+    }
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    Ok(dir.join(name))
+}
+
+/// Read a file from the app-data folder. A missing file returns an empty response.
+#[tauri::command]
+fn data_read(app: AppHandle, name: String) -> Result<Response, String> {
+    let path = data_path(&app, &name)?;
+    match fs::read(&path) {
+        Ok(bytes) => Ok(Response::new(bytes)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Response::new(Vec::new())),
+        Err(e) => Err(format!("{}: {e}", path.display())),
+    }
+}
+
+/// Write a file in the app-data folder (atomically). Raw body; name in the `x-name` header.
+#[tauri::command]
+fn data_write(app: AppHandle, request: Request<'_>) -> Result<(), String> {
+    let name = request
+        .headers()
+        .get("x-name")
+        .ok_or("missing x-name header")?
+        .to_str()
+        .map_err(|e| e.to_string())?;
+    let path = data_path(&app, &percent_decode(name)?)?;
+    let InvokeBody::Raw(data) = request.body() else {
+        return Err("expected raw bytes".into());
+    };
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    write_atomic(&path, data).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// Delete a file or folder in the app-data folder. Missing is fine.
+#[tauri::command]
+fn data_delete(app: AppHandle, name: String) -> Result<(), String> {
+    let path = data_path(&app, &name)?;
+    let result = if path.is_dir() { fs::remove_dir_all(&path) } else { fs::remove_file(&path) };
+    match result {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.to_string()),
+        _ => Ok(()),
+    }
+}
+
+/// Which of these files still exist (to grey out moved or deleted files).
+#[tauri::command]
+fn paths_exist(paths: Vec<String>) -> Vec<bool> {
+    paths.iter().map(|p| Path::new(p).is_file()).collect()
+}
+
 // ------------------------------------------------------------------ opening files
 //
 // Files reach Unacro in three ways:
@@ -171,7 +239,15 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![read_file, write_file, initial_paths])
+        .invoke_handler(tauri::generate_handler![
+            read_file,
+            write_file,
+            initial_paths,
+            data_read,
+            data_write,
+            data_delete,
+            paths_exist
+        ])
         .build(tauri::generate_context!())
         .expect("error while building Unacro")
         .run(|_app, _event| {
@@ -191,6 +267,18 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn data_names_stay_inside_the_data_folder() {
+        assert!(valid_data_name("history.json"));
+        assert!(valid_data_name("thumbs/ab12.jpg"));
+        assert!(!valid_data_name("../secrets"));
+        assert!(!valid_data_name("thumbs/../../x"));
+        assert!(!valid_data_name("/etc/passwd"));
+        assert!(!valid_data_name("a\\b"));
+        assert!(!valid_data_name("C:x"));
+        assert!(!valid_data_name(""));
+    }
 
     #[test]
     fn decodes_paths() {

@@ -18,6 +18,9 @@ See [GOALS.md](GOALS.md) for what Unacro is (and deliberately isn't).
 - **Sign**: draw your signature once (or import a photo/scan of it), then click to place it, drag to move, resize from the corner
 - **Markdown**: export or copy a document as Markdown, with headings, paragraphs and lists inferred from the layout
 - **3D models**: STL viewer with rotate, pan, zoom, size and triangle count
+- **Library**: every file you've opened in the last 6 months (configurable), as the first tab. View it as a recent list, a timeline (last 5 minutes, last hour, each hour of today, yesterday, each day of the week, then months), by folder, or by type (PDFs, screenshots, images, 3D). Search as you type, with thumbnails, "open" badges, and moved or deleted files greyed out. Open, show in Finder / file manager, copy the path, or remove an entry.
+- **Go to File** (`Ctrl+P`): type a few letters of any open or recent file and press Enter.
+- **Stays light all day**: at most 12 files stay open (configurable in Settings, `Ctrl+,`). Opening more closes the tab you've used least recently, and a message offers to reopen it. Pinned tabs, tabs with unsaved changes, and new documents never close and don't count.
 - **Proper file handling**: Save, Save As (the document then lives at the new location), Save a Copy, no autosave, atomic writes, full path in the status bar (click it to open the containing folder, or copy it with the button next to it), a message after every save with "Show in Finder" / "Open Folder" and "Copy Path" buttons, "Open Containing Folder" and "Copy Path" on each tab's right-click menu, unsaved-changes prompts, recent files, one window with tabs
 
 ## Keyboard
@@ -25,6 +28,9 @@ See [GOALS.md](GOALS.md) for what Unacro is (and deliberately isn't).
 | Action | Shortcut |
 | --- | --- |
 | New from Clipboard | `Ctrl+N` |
+| Go to File (open or recent) | `Ctrl+P` |
+| Library / back to the last file | `Ctrl+Shift+H` |
+| Settings | `Ctrl+,` |
 | Open / Save / Save As | `Ctrl+O` / `Ctrl+S` / `Ctrl+Shift+S` |
 | Close tab / switch tabs | `Ctrl+W` / `Ctrl+Tab`, `Ctrl+PageDown`, `Ctrl+PageUp` |
 | Undo / Redo | `Ctrl+Z` / `Ctrl+Shift+Z` or `Ctrl+Y` |
@@ -121,7 +127,7 @@ Edits are never applied to your file directly. A document is a list of page refe
 
 ## Privacy
 
-Unacro makes no network requests. Saved signatures are stored locally on your machine.
+Unacro makes no network requests. Saved signatures, settings and the Library stay on your machine. The Library is a small `history.json` plus thumbnails in Unacro's data folder (`~/Library/Application Support/dev.unacro.app` on macOS, `~/.local/share/dev.unacro.app` on Linux). "Clear Library…" in Settings deletes it.
 
 ## License
 

@@ -35,6 +35,10 @@ import {
 } from "./core/formats";
 import { encodeCanvas } from "./images";
 import { createModelViewer, parseStl, type LoadedModel, type ModelViewer, type ViewState } from "./model3d";
+import { HistoryStore, kindOfPath, loadSettings, saveSettings, type Settings } from "./history";
+import { LibraryView } from "./ui/library";
+import { showSwitcher, isSwitcherOpen, type SwitcherItem } from "./ui/switcher";
+import { splitPath, type HistoryKind } from "./core/history";
 import { isMac, type OpenedFile, type Platform } from "./platform";
 import { closeMenus, h, icon, isModalOpen, modal, openMenu, showPopover, toast, type MenuItem } from "./ui/dom";
 import {
@@ -72,6 +76,10 @@ interface Doc {
   copied: string | null;
   /** For a new, never-saved document made from another file: where Save should start. */
   nearPath: string | null;
+  /** Pinned tabs are never closed automatically. */
+  pinned: boolean;
+  /** When the tab was last shown (for closing the least recently used ones). */
+  lastActive: number;
 }
 
 interface PageEl {
@@ -89,7 +97,6 @@ interface PageEl {
 
 const MOD = isMac() ? "⌘" : "Ctrl+";
 const SHIFT = isMac() ? "⇧" : "Shift+";
-const RECENT_KEY = "unacro.recent";
 const THUMB_W = 116;
 const THUMB_H = 150;
 const PAGE_GAP = 16;
@@ -119,6 +126,11 @@ export class App {
   /** The callout whose text is being typed, and its text box. */
   private editing: { pageId: string; mark: Mark; isNew: boolean; textarea: HTMLTextAreaElement } | null = null;
   private calloutFontBytes: Promise<Uint8Array> | null = null;
+  private settings: Settings = loadSettings();
+  private history: HistoryStore;
+  private library: LibraryView;
+  /** The document shown before switching to the Library, to switch back to. */
+  private lastDoc: Doc | null = null;
   /** The last plain click (press and release without moving) on a shape, to spot double-clicks. */
   private lastMarkClick: { id: string; t: number; x: number; y: number } | null = null;
   private search = { query: "", hits: [] as string[], cur: -1, running: 0 };
@@ -140,18 +152,37 @@ export class App {
   private modelHost = h("section", { class: "model-view", "aria-label": "3D model" });
   private modelViewer: ModelViewer | null = null;
   private modelViewerLoading: Promise<ModelViewer | null> | null = null;
-  private empty = h("div", { class: "empty" });
   private status = h("footer", { class: "statusbar" });
   private searchInput = h("input", { class: "search-input", type: "search", placeholder: "Find", "aria-label": "Find in document" });
   private searchInfo = h("span", { class: "search-info" });
   private buttons: Record<string, HTMLButtonElement> = {};
 
-  constructor(private platform: Platform) {}
+  constructor(private platform: Platform) {
+    this.history = new HistoryStore(platform, () => this.settings.historyMonths);
+    this.library = new LibraryView({
+      history: this.history,
+      isOpen: (path) => this.docs.some((d) => d.path === path),
+      open: (path) => void this.openPath(path),
+      reveal: (path) => void this.platform.reveal(path).catch((e: any) => toast(`Couldn't open the folder: ${e?.message ?? e}`, "error")),
+      revealLabel: isMac() ? "Show in Finder" : /Windows/.test(navigator.userAgent) ? "Show in Explorer" : "Open Folder",
+      canReveal: platform.canReveal,
+      copyPath: (path) => this.copyPath(path),
+      openDialog: () => void this.openDialog(),
+      newFromClipboard: () => void this.newFromClipboard(),
+      settings: () => void this.settingsDialog(),
+      months: () => this.settings.historyMonths,
+    });
+  }
 
   // ================================================================ setup
 
   async start() {
     for (const sig of loadSignatures()) this.images.set(sig.id, dataUrlToBytes(sig.dataUrl));
+    await this.history.load();
+    this.history.onChange = () => {
+      if (!this.active) this.library.render();
+    };
+    window.addEventListener("beforeunload", () => void this.history.save());
     this.buildChrome();
     this.pageObserver = new IntersectionObserver((entries) => this.onPagesVisible(entries), {
       root: this.viewer,
@@ -252,7 +283,7 @@ export class App {
       if (e.target === this.tabs) void this.openDialog();
     });
 
-    const workspace = h("main", { class: "workspace" }, this.sidebar, this.viewer, this.modelHost, this.empty);
+    const workspace = h("main", { class: "workspace" }, this.sidebar, this.viewer, this.modelHost, this.library.el);
     this.buildMarkupBar();
     this.root.append(this.toolbar, this.tabs, this.markupBar, workspace, this.status);
   }
@@ -268,6 +299,8 @@ export class App {
       markup: !!extra.imageFormat,
       copied: null,
       nearPath: null,
+      pinned: false,
+      lastActive: Date.now(),
       id: uid("d"),
       name,
       path,
@@ -314,7 +347,7 @@ export class App {
         try {
           const model = await parseStl(f.bytes);
           last = this.newDoc(f.name, f.path, [], true, { kind: "model", model });
-          if (f.path) this.addRecent(f.path);
+          if (f.path) this.history.record(f.path, "model", true);
         } catch (e: any) {
           toast(`Couldn't open “${f.name}”: ${e?.message ?? e}`, "error");
         }
@@ -325,9 +358,15 @@ export class App {
       last = this.newDoc(f.name, f.path, pagesForSource(src.id, src.pageCount), true, {
         imageFormat: src.original?.format ?? null,
       });
-      if (f.path) this.addRecent(f.path);
+      if (f.path) {
+        this.history.record(f.path, src.original ? "image" : "pdf", true);
+        void this.saveThumb(last);
+      }
     }
-    if (last) this.activate(last);
+    if (last) {
+      this.activate(last);
+      this.enforceTabLimit();
+    }
   }
 
   async openDialog() {
@@ -345,7 +384,7 @@ export class App {
       await this.openFiles([await this.platform.readPath(path)]);
     } catch (e: any) {
       toast(`Couldn't open ${path}: ${e?.message ?? e}`, "error");
-      this.removeRecent(path);
+      if (this.history.get(path)) void this.history.refreshExistence(true).then(() => !this.active && this.library.render());
     }
   }
 
@@ -398,6 +437,14 @@ export class App {
 
   private activate(doc: Doc | null) {
     this.finishEditing();
+    if (doc) {
+      doc.lastActive = Date.now();
+      // Count viewing a file as using it, at most once a minute per file.
+      const h = doc.path ? this.history.get(doc.path) : undefined;
+      if (doc.path && (!h || Date.now() - h.last > 60_000)) this.history.record(doc.path, this.historyKind(doc), false);
+    } else if (this.active) {
+      this.lastDoc = this.active;
+    }
     if (this.active && this.active !== doc) {
       this.active.scrollTop = this.viewer.scrollTop;
       if (this.active.kind === "model") this.active.view3d = this.modelViewer?.getView() ?? null;
@@ -549,6 +596,8 @@ export class App {
       await this.writeTo(doc, doc.path);
       doc.saved = snapshot(doc.pages);
       this.render();
+      this.history.record(doc.path, this.historyKind(doc), false);
+      void this.saveThumb(doc);
       this.savedToast(`Saved ${doc.name}`, doc.path);
       return true;
     } catch (e: any) {
@@ -569,7 +618,9 @@ export class App {
       doc.name = this.platform.baseName(path);
       doc.imageFormat = format && format !== "pdf" ? format : null;
       doc.saved = snapshot(doc.pages);
-      this.addRecent(path);
+      doc.nearPath = null;
+      this.history.record(path, this.historyKind(doc), true);
+      void this.saveThumb(doc);
       this.render();
       this.savedToast(`Saved as ${doc.name}`, path);
       return true;
@@ -589,7 +640,7 @@ export class App {
     if (!path) return;
     try {
       await this.writeTo(doc, path);
-      this.addRecent(path);
+      this.history.record(path, kindOfPath(path), false);
       this.savedToast(`Saved a copy as ${this.platform.baseName(path)}`, path);
     } catch (e: any) {
       toast(`Couldn't save: ${e?.message ?? e}`, "error");
@@ -968,7 +1019,7 @@ export class App {
     this.renderTitle();
     if (!d || d.kind === "model") {
       if (d) void this.showModel(d);
-      this.renderEmpty();
+      this.library.render();
       for (const pe of this.pageEls.values()) this.pageObserver.unobserve(pe.el);
       this.pageEls.clear();
       this.pagesHost.replaceChildren();
@@ -1011,7 +1062,7 @@ export class App {
   private renderTitle() {
     const d = this.active;
     (window as any).__unacroDirty = this.docs.some(isDirty);
-    if (!d) return this.platform.setTitle("Unacro");
+    if (!d) return this.platform.setTitle("Library — Unacro");
     const where = d.path ? this.platform.displayPath(d.path) : "not saved yet";
     this.platform.setTitle(`${isDirty(d) ? "● " : ""}${d.name} — ${where}`);
   }
@@ -1032,12 +1083,26 @@ export class App {
   }
 
   private renderTabs() {
-    const items = this.docs.map((d) => {
+    // Pinned tabs first.
+    const ordered = [...this.docs.filter((d) => d.pinned), ...this.docs.filter((d) => !d.pinned)];
+    const libraryTab = h(
+      "div",
+      {
+        class: `tab library-tab${this.active ? "" : " active"}`,
+        role: "tab",
+        "aria-selected": String(!this.active),
+        title: `Library: every file you've opened (${SHIFT}${MOD}H)`,
+        onmousedown: (e: MouseEvent) => e.button === 0 && this.showLibrary(),
+      },
+      icon("library"),
+      h("span", { class: "tab-name" }, "Library"),
+    );
+    const items = ordered.map((d) => {
       const dirty = isDirty(d);
       const tab = h(
         "div",
         {
-          class: `tab${d === this.active ? " active" : ""}${dirty ? " dirty" : ""}`,
+          class: `tab${d === this.active ? " active" : ""}${dirty ? " dirty" : ""}${d.pinned ? " pinned" : ""}`,
           role: "tab",
           "aria-selected": String(d === this.active),
           title: d.path ? this.platform.displayPath(d.path) : `${d.name} (not saved yet)`,
@@ -1053,6 +1118,7 @@ export class App {
             this.showTabMenu(d, e.clientX, e.clientY);
           },
         },
+        d.pinned ? h("span", { class: "tab-pin", title: "Pinned: never closed automatically" }, icon("pin")) : null,
         h("span", { class: "tab-name" }, d.name),
         h("span", { class: "tab-dot", "aria-label": dirty ? "Unsaved changes" : undefined }),
         h("button", {
@@ -1068,10 +1134,18 @@ export class App {
     const listBtn = this.docs.length > 1
       ? h("button", { class: "tab-list", title: "All open documents", "aria-label": "All open documents", onclick: (e: MouseEvent) => {
           const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
-          openMenu(this.docs.map((d) => ({ label: `${isDirty(d) ? "● " : ""}${d.name}`, action: () => this.activate(d) })), r.left - 200, r.bottom + 4);
+          openMenu(
+            [
+              ...[...this.docs].sort((a, b) => b.lastActive - a.lastActive).map((d) => ({ label: `${isDirty(d) ? "● " : ""}${d.pinned ? "📌 " : ""}${d.name}`, action: () => this.activate(d) })),
+              { separator: true, label: "" },
+              { label: "Go to File…", shortcut: `${MOD}P`, action: () => this.quickSwitch() },
+            ],
+            r.left - 200,
+            r.bottom + 4,
+          );
         } }, icon("chevron"))
       : null;
-    const strip = h("div", { class: "tab-strip" }, ...items);
+    const strip = h("div", { class: "tab-strip" }, libraryTab, ...items);
     this.tabs.replaceChildren(strip, ...(listBtn ? [listBtn] : []));
     const activeTab = strip.querySelector(".tab.active");
     activeTab?.scrollIntoView({ block: "nearest", inline: "nearest" });
@@ -1080,7 +1154,12 @@ export class App {
   private renderStatus() {
     const d = this.active;
     if (!d) {
-      this.status.replaceChildren(h("span", { class: "muted" }, "No document open"));
+      const n = this.history.size;
+      this.status.replaceChildren(
+        h("span", { class: "muted" }, `Library: ${n} file${n === 1 ? "" : "s"}`),
+        h("span", { class: "spacer" }),
+        h("span", { class: "muted" }, `${this.docs.length} open · ${MOD}P to go to any file`),
+      );
       return;
     }
     const idx = d.pages.findIndex((p) => p.id === this.currentPageId);
@@ -1110,37 +1189,6 @@ export class App {
     if (d.selection.size > 1) parts.push(h("span", {}, `${d.selection.size} pages selected`));
     parts.push(h("span", { class: "page-pos" }, `Page ${idx + 1 || 1} of ${d.pages.length}`));
     this.status.replaceChildren(...parts);
-  }
-
-  private renderEmpty() {
-    const recent = this.platform.persistentPaths ? this.getRecent() : [];
-    this.empty.replaceChildren(
-      h(
-        "div",
-        { class: "empty-inner" },
-        h("div", { class: "brand" }, "Unacro"),
-        h("p", { class: "muted" }, "Drop PDFs, images or STL models anywhere to open them."),
-        h(
-          "div",
-          { class: "empty-actions" },
-          h("button", { class: "btn primary", onclick: () => void this.openDialog() }, "Open…"),
-          h("button", { class: "btn plain", onclick: () => void this.newFromClipboard() }, "New from Clipboard"),
-          h("button", { class: "btn plain", onclick: () => void this.combineFromFiles() }, "Combine Files…"),
-        ),
-        recent.length
-          ? h(
-              "div",
-              { class: "recent" },
-              h("h3", {}, "Recent"),
-              ...recent.slice(0, 8).map((p) =>
-                h("button", { class: "recent-item", title: p, onclick: () => void this.openPath(p) },
-                  h("span", { class: "recent-name" }, this.platform.baseName(p)),
-                  h("span", { class: "recent-path" }, p)),
-              ),
-            )
-          : null,
-      ),
-    );
   }
 
   // ------------------------------------------------------------ sidebar
@@ -1615,21 +1663,20 @@ export class App {
     const d = this.active;
     const pages = d?.kind === "pages";
     const r = anchor.getBoundingClientRect();
-    const recent = this.platform.persistentPaths ? this.getRecent() : [];
+    const recent = this.history.list().sort((a, b) => b.last - a.last).slice(0, 15);
     const items: MenuItem[] = [
       { label: "New from Clipboard", shortcut: `${MOD}N`, action: () => void this.newFromClipboard() },
       { label: "Open…", shortcut: `${MOD}O`, action: () => void this.openDialog() },
-      ...(this.platform.persistentPaths
-        ? [{
-            label: "Open Recent",
-            disabled: !recent.length,
-            submenu: [
-              ...recent.map((p) => ({ label: p, action: () => void this.openPath(p) })),
-              { separator: true, label: "" },
-              { label: "Clear Menu", action: () => this.clearRecent() },
-            ],
-          }]
-        : []),
+      {
+        label: "Open Recent",
+        disabled: !recent.length,
+        submenu: [
+          ...recent.map((e) => ({ label: e.path, action: () => void this.openPath(e.path) })),
+          { separator: true, label: "" },
+          { label: "Show Library", shortcut: `${SHIFT}${MOD}H`, action: () => this.showLibrary() },
+        ],
+      },
+      { label: "Go to File…", shortcut: `${MOD}P`, action: () => this.quickSwitch() },
       { label: "Combine Files into New PDF…", action: () => void this.combineFromFiles() },
       { label: "Combine All Open Tabs", disabled: this.docs.filter((x) => x.kind === "pages").length < 2, action: () => this.combineOpenTabs() },
       { separator: true, label: "" },
@@ -1644,6 +1691,8 @@ export class App {
       ...(this.platform.canReveal ? [{ label: "Open Containing Folder", disabled: !d?.path, action: () => d && this.revealDoc(d) }] : []),
       { label: "Copy Path", disabled: !d?.path, action: () => d?.path && this.copyPath(d.path) },
       { label: "Close", shortcut: `${MOD}W`, disabled: !d, action: () => d && void this.closeDoc(d) },
+      { separator: true, label: "" },
+      { label: "Settings…", shortcut: `${MOD},`, action: () => void this.settingsDialog() },
     ];
     openMenu(items, r.left, r.bottom + 4);
   }
@@ -1696,6 +1745,8 @@ export class App {
           ? [{ label: d.path ? "Open Containing Folder" : "Open Containing Folder (not saved yet)", disabled: !d.path, action: () => this.revealDoc(d) }]
           : []),
         { label: "Copy Path", disabled: !d.path, action: () => d.path && this.copyPath(d.path) },
+        { separator: true, label: "" },
+        { label: d.pinned ? "Unpin Tab" : "Pin Tab", action: () => this.togglePin(d) },
         { separator: true, label: "" },
         { label: "Close", action: () => void this.closeDoc(d) },
         { label: "Close Other Tabs", disabled: this.docs.length < 2, action: () => void this.closeOthers(d) },
@@ -1761,7 +1812,7 @@ export class App {
   }
 
   private onKey(e: KeyboardEvent) {
-    if (isModalOpen()) return;
+    if (isModalOpen() || isSwitcherOpen()) return;
     if (this.editing && e.target === this.editing.textarea) {
       const mod = isMac() ? e.metaKey : e.ctrlKey;
       if (e.key === "Escape" || (e.key === "Enter" && mod)) {
@@ -1791,10 +1842,14 @@ export class App {
     if (mod) {
       const act: Record<string, () => void> = {
         o: () => void this.openDialog(),
+        p: () => this.quickSwitch(),
+        ",": () => void this.settingsDialog(),
+        h: () => e.shiftKey && this.toggleLibrary(),
         n: () => void this.newFromClipboard(),
         s: () => void (e.shiftKey ? this.saveAs() : this.save()),
         w: () => this.active && void this.closeDoc(this.active),
         f: () => {
+          if (!this.active) return this.library.focusSearch();
           this.searchInput.focus();
           this.searchInput.select();
         },
@@ -2687,36 +2742,147 @@ export class App {
     }
   }
 
-  // ================================================================ recent files
+  // ================================================================ library, tab limit, settings
 
-  private getRecent(): string[] {
+  private historyKind(doc: Doc): HistoryKind {
+    return doc.kind === "model" ? "model" : doc.imageFormat ? "image" : "pdf";
+  }
+
+  /** A small picture of the first page, for the Library. */
+  private async saveThumb(doc: Doc) {
+    const ref = doc.pages[0];
+    if (!doc.path || !ref || doc.kind !== "pages") return;
     try {
-      return JSON.parse(localStorage.getItem(RECENT_KEY) ?? "[]");
+      const size = displaySize(this.sources, ref);
+      const scale = Math.min(180 / size.width, 180 / size.height);
+      const canvas = document.createElement("canvas");
+      await renderInto(this.sources, ref, scale / (window.devicePixelRatio || 1), canvas, () => true);
+      if (canvas.width) await this.history.setThumb(doc.path, canvas);
+      canvas.width = canvas.height = 0;
     } catch {
-      return [];
+      /* a missing thumbnail is fine */
     }
   }
 
-  private setRecent(list: string[]) {
-    try {
-      localStorage.setItem(RECENT_KEY, JSON.stringify(list.slice(0, 15)));
-    } catch {
-      /* storage unavailable */
+  showLibrary() {
+    if (this.active) this.activate(null);
+    this.library.render();
+  }
+
+  private toggleLibrary() {
+    if (this.active) return this.showLibrary();
+    const back = this.lastDoc && this.docs.includes(this.lastDoc) ? this.lastDoc : [...this.docs].sort((a, b) => b.lastActive - a.lastActive)[0];
+    if (back) this.activate(back);
+  }
+
+  private togglePin(d: Doc) {
+    d.pinned = !d.pinned;
+    this.renderTabs();
+    if (!d.pinned) this.enforceTabLimit();
+  }
+
+  /**
+   * Keep at most `maxTabs` files open by closing the least recently used ones.
+   * Pinned tabs, unsaved changes and never-saved documents are never closed, and
+   * don't count toward the limit; neither does the tab you're looking at.
+   */
+  private enforceTabLimit() {
+    const countable = this.docs.filter((d) => !d.pinned && d.path && !d.path.startsWith("download:") && !isDirty(d));
+    let excess = countable.length - this.settings.maxTabs;
+    if (excess <= 0) return;
+    const victims = countable.filter((d) => d !== this.active).sort((a, b) => a.lastActive - b.lastActive);
+    const closed: Doc[] = [];
+    for (const d of victims) {
+      if (excess-- <= 0) break;
+      const i = this.docs.indexOf(d);
+      this.docs.splice(i, 1);
+      if (this.lastDoc === d) this.lastDoc = null;
+      closed.push(d);
     }
+    if (!closed.length) return;
+    this.collectSources();
+    this.render();
+    // Opening several files closes several tabs: tell about them in one message.
+    this.recentlyClosed.push(...closed);
+    clearTimeout(this.closedToastTimer);
+    this.closedToastTimer = window.setTimeout(() => {
+      const all = this.recentlyClosed.splice(0);
+      const names = all.length === 1 ? `“${all[0].name}”` : `${all.length} tabs you hadn't used for a while`;
+      toast(`Closed ${names}${all.length === 1 ? ", which you hadn't used for a while" : ""}. Keeping ${this.settings.maxTabs} files open.`, "info", {
+        actions: [
+          ...(all.length === 1 && all[0].path ? [{ label: "Reopen", run: () => void this.openPath(all[0].path!) }] : []),
+          { label: "Library", run: () => this.showLibrary() },
+        ],
+      });
+    }, 600);
   }
 
-  private addRecent(path: string) {
-    if (!this.platform.persistentPaths) return;
-    this.setRecent([path, ...this.getRecent().filter((p) => p !== path)]);
+  private recentlyClosed: Doc[] = [];
+  private closedToastTimer = 0;
+
+  private quickSwitch() {
+    const now = Date.now();
+    const openItems: SwitcherItem[] = this.docs.map((d) => ({
+      docId: d.id,
+      path: d.path,
+      ...(d.path ? splitPath(this.platform.displayPath(d.path)) : { name: d.name, dir: "" }),
+      name: d.name,
+      last: d === this.active ? now : d.lastActive,
+      kind: this.historyKind(d),
+    }));
+    const openPaths = new Set(this.docs.map((d) => d.path).filter(Boolean));
+    const fromHistory: SwitcherItem[] = this.history
+      .list()
+      .filter((e) => !openPaths.has(e.path) && this.history.exists(e.path))
+      .map((e) => ({ path: e.path, name: e.name, dir: e.dir, last: e.last, kind: e.kind }));
+    showSwitcher([...openItems, ...fromHistory], (it) => {
+      const doc = it.docId ? this.docs.find((d) => d.id === it.docId) : undefined;
+      if (doc) this.activate(doc);
+      else if (it.path) void this.openPath(it.path);
+    });
   }
 
-  private removeRecent(path: string) {
-    this.setRecent(this.getRecent().filter((p) => p !== path));
-    if (!this.active) this.renderEmpty();
-  }
-
-  private clearRecent() {
-    this.setRecent([]);
-    if (!this.active) this.renderEmpty();
+  private async settingsDialog() {
+    const s = this.settings;
+    const tabs = h("input", { type: "number", min: "1", max: "200", step: "1", value: String(s.maxTabs), class: "num-input", "aria-label": "Most open files" });
+    const months = h("input", { type: "number", min: "1", max: "120", step: "1", value: String(s.historyMonths), class: "num-input", "aria-label": "Months of history" });
+    const clear = h("button", { class: "btn plain small", onclick: async () => {
+      const ok = await modal({
+        title: "Clear the Library?",
+        body: "Unacro will forget every file you've opened. Your files themselves aren't touched.",
+        cancelValue: false,
+        buttons: [{ label: "Cancel", value: false }, { label: "Clear", value: true, kind: "danger" }],
+      });
+      if (ok) {
+        await this.history.clear();
+        toast("Library cleared");
+      }
+    } }, "Clear Library…");
+    const body = h(
+      "div",
+      { class: "settings" },
+      h("label", { class: "setting" }, h("span", {}, "Keep at most"), tabs, h("span", {}, "files open")),
+      h("p", { class: "setting-note" }, "Older tabs close by themselves (you can reopen them from the Library). Pinned tabs, unsaved changes and new documents never close and don't count."),
+      h("label", { class: "setting" }, h("span", {}, "Remember files opened in the last"), months, h("span", {}, "months")),
+      h("p", { class: "setting-note" }, "The Library keeps names, folders, times and small thumbnails on this computer only."),
+      h("div", { class: "setting" }, clear),
+    );
+    const ok = await modal({
+      title: "Settings",
+      body,
+      cancelValue: false,
+      buttons: [{ label: "Cancel", value: false }, { label: "Save", value: true, kind: "primary" }],
+    });
+    if (!ok) return;
+    const maxTabs = Math.round(Number(tabs.value));
+    const historyMonths = Math.round(Number(months.value));
+    this.settings = {
+      maxTabs: Number.isFinite(maxTabs) && maxTabs >= 1 ? Math.min(200, maxTabs) : s.maxTabs,
+      historyMonths: Number.isFinite(historyMonths) && historyMonths >= 1 ? Math.min(120, historyMonths) : s.historyMonths,
+    };
+    saveSettings(this.settings);
+    this.history.prune();
+    this.enforceTabLimit();
+    if (!this.active) this.library.render();
   }
 }
