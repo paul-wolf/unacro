@@ -485,7 +485,7 @@ export class App {
     const format = saveFormatOf(doc.path);
     if (format && format !== "pdf") {
       if (!isDirty(doc)) {
-        toast("No changes to save");
+        this.savedToast("No changes to save", doc.path);
         return true;
       }
       const problem = this.imageSaveProblem(doc, format);
@@ -498,7 +498,7 @@ export class App {
       await this.writeTo(doc, doc.path);
       doc.saved = snapshot(doc.pages);
       this.render();
-      toast(`Saved ${doc.name}`);
+      this.savedToast(`Saved ${doc.name}`, doc.path);
       return true;
     } catch (e: any) {
       toast(`Couldn't save: ${e?.message ?? e}`, "error");
@@ -520,7 +520,7 @@ export class App {
       doc.saved = snapshot(doc.pages);
       this.addRecent(path);
       this.render();
-      toast(`Saved as ${doc.name}`);
+      this.savedToast(`Saved as ${doc.name}`, path);
       return true;
     } catch (e: any) {
       toast(`Couldn't save: ${e?.message ?? e}`, "error");
@@ -539,7 +539,7 @@ export class App {
     try {
       await this.writeTo(doc, path);
       this.addRecent(path);
-      toast(`Saved a copy as ${this.platform.baseName(path)}`);
+      this.savedToast(`Saved a copy as ${this.platform.baseName(path)}`, path);
     } catch (e: any) {
       toast(`Couldn't save: ${e?.message ?? e}`, "error");
     }
@@ -562,7 +562,7 @@ export class App {
     try {
       const md = await this.markdownFor(doc);
       await this.platform.write(path, new TextEncoder().encode(md));
-      toast(md.trim() ? `Exported ${this.platform.baseName(path)}` : "Exported, but this PDF has no text (it may be a scan).");
+      this.savedToast(md.trim() ? `Exported ${this.platform.baseName(path)}` : "Exported, but this PDF has no text (it may be a scan).", path);
     } catch (e: any) {
       toast(`Couldn't export: ${e?.message ?? e}`, "error");
     }
@@ -573,7 +573,7 @@ export class App {
     if (!doc) return;
     try {
       const md = await this.markdownFor(doc);
-      await navigator.clipboard.writeText(md);
+      await this.platform.writeClipboardText(md);
       toast(md.trim() ? "Markdown copied to the clipboard" : "This PDF has no text to copy (it may be a scan).");
     } catch (e: any) {
       toast(`Couldn't copy: ${e?.message ?? e}`, "error");
@@ -1036,7 +1036,11 @@ export class App {
           onclick: () => this.platform.canReveal && this.revealDoc(d),
         }, this.platform.canReveal ? icon("folder") : null, h("span", { class: "path-text" }, h("bdi", {}, this.platform.displayPath(d.path))))
       : h("span", { class: "path muted" }, "No file location yet. Save will ask where.");
-    const parts: Node[] = [pathEl, h("span", { class: "spacer" })];
+    const parts: Node[] = [pathEl];
+    if (d.path && !d.path.startsWith("download:")) {
+      parts.push(h("button", { class: "copy-path", title: "Copy path", "aria-label": "Copy path", onclick: () => this.copyPath(d.path!) }, icon("copy")));
+    }
+    parts.push(h("span", { class: "spacer" }));
     if (d.kind === "model" && d.model) {
       const { size, triangles } = d.model.info;
       const fmt = (n: number) => (n >= 100 ? n.toFixed(0) : n >= 10 ? n.toFixed(1) : n.toFixed(2));
@@ -1546,6 +1550,7 @@ export class App {
       { label: "Export as Markdown…", disabled: !pages || !!d?.imageFormat, action: () => void this.exportMarkdown() },
       { separator: true, label: "" },
       ...(this.platform.canReveal ? [{ label: "Open Containing Folder", disabled: !d?.path, action: () => d && this.revealDoc(d) }] : []),
+      { label: "Copy Path", disabled: !d?.path, action: () => d?.path && this.copyPath(d.path) },
       { label: "Close", shortcut: `${MOD}W`, disabled: !d, action: () => d && void this.closeDoc(d) },
     ];
     openMenu(items, r.left, r.bottom + 4);
@@ -1563,6 +1568,29 @@ export class App {
     );
   }
 
+  /** "Saved" toast with a button that opens the file's folder in the system file manager. */
+  private savedToast(message: string, path: string) {
+    const real = this.platform.canReveal && !path.startsWith("download:") && !path.startsWith("handle:");
+    if (!real) return toast(message);
+    const shown = this.platform.displayPath(path);
+    const i = Math.max(shown.lastIndexOf("/"), shown.lastIndexOf("\\"));
+    const label = isMac() ? "Show in Finder" : /Windows/.test(navigator.userAgent) ? "Show in Explorer" : "Open Folder";
+    toast(message, "info", {
+      detail: i > 0 ? shown.slice(0, i) : shown,
+      actions: [
+        { label, run: () => this.platform.reveal(path).catch((e: any) => toast(`Couldn't open the folder: ${e?.message ?? e}`, "error")) },
+        { label: "Copy Path", run: () => this.copyPath(path) },
+      ],
+    });
+  }
+
+  private copyPath(path: string) {
+    this.platform.writeClipboardText(this.platform.displayPath(path)).then(
+      () => toast("Path copied"),
+      (e) => toast(`Couldn't copy: ${e?.message ?? e}`, "error"),
+    );
+  }
+
   /** Open the file manager on the folder that holds the document, with the file selected. */
   private revealDoc(d: Doc) {
     if (!d.path) return;
@@ -1575,7 +1603,7 @@ export class App {
         ...(this.platform.canReveal
           ? [{ label: d.path ? "Open Containing Folder" : "Open Containing Folder (not saved yet)", disabled: !d.path, action: () => this.revealDoc(d) }]
           : []),
-        { label: "Copy Path", disabled: !d.path, action: () => d.path && void navigator.clipboard.writeText(this.platform.displayPath(d.path)) },
+        { label: "Copy Path", disabled: !d.path, action: () => d.path && this.copyPath(d.path) },
         { separator: true, label: "" },
         { label: "Close", action: () => void this.closeDoc(d) },
         { label: "Close Other Tabs", disabled: this.docs.length < 2, action: () => void this.closeOthers(d) },

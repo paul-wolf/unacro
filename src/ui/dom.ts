@@ -203,14 +203,36 @@ document.addEventListener("mousedown", (e) => {
 
 // ------------------------------------------------------------ toasts
 
-export function toast(message: string, kind: "info" | "error" = "info") {
+export interface ToastOptions {
+  /** A second, quieter line, e.g. a folder path. Long text is cut at the start. */
+  detail?: string;
+  /** Buttons in the toast. */
+  actions?: { label: string; run: () => void }[];
+}
+
+export function toast(message: string, kind: "info" | "error" = "info", opts: ToastOptions = {}) {
   let host = document.querySelector(".toasts");
   if (!host) {
     host = h("div", { class: "toasts", role: "status", "aria-live": "polite" });
     document.body.append(host);
   }
-  const el = h("div", { class: `toast ${kind}` }, message);
+  const text = h("div", { class: "toast-text" }, h("div", {}, message), opts.detail ? h("div", { class: "toast-detail" }, h("bdi", {}, opts.detail)) : null);
+  const actions = opts.actions ?? [];
+  const el = h("div", { class: `toast ${kind}${actions.length ? " has-action" : ""}` }, text);
+  for (const { run, label } of actions) {
+    el.append(h("button", { class: "toast-action", onclick: () => { run(); dismiss(); } }, label));
+  }
   host.append(el);
-  setTimeout(() => el.classList.add("leaving"), kind === "error" ? 6000 : 2800);
-  setTimeout(() => el.remove(), kind === "error" ? 6400 : 3200);
+  // Toasts with a button stay longer, and don't disappear while the pointer is on them.
+  const life = actions.length ? 9000 : kind === "error" ? 6000 : 2800;
+  let timer = 0;
+  const dismiss = () => {
+    clearTimeout(timer);
+    el.classList.add("leaving");
+    setTimeout(() => el.remove(), 400);
+  };
+  const arm = () => (timer = window.setTimeout(dismiss, life));
+  el.addEventListener("mouseenter", () => clearTimeout(timer));
+  el.addEventListener("mouseleave", arm);
+  arm();
 }

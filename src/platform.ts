@@ -79,6 +79,7 @@ export interface Platform {
   onFileDrop(handler: (files: () => Promise<OpenedFile[]>, x: number, y: number) => void): void;
   /** An image on the clipboard (e.g. a screenshot) as PNG bytes, or null if there is none. */
   readClipboardImage(): Promise<Uint8Array | null>;
+  writeClipboardText(text: string): Promise<void>;
   /** Put an image on the clipboard so it can be pasted into other apps. */
   writeClipboardImage(canvas: HTMLCanvasElement): Promise<void>;
   /** Whether recent-file paths survive a restart. */
@@ -149,6 +150,7 @@ async function tauriPlatform(): Promise<Platform> {
     baseName: baseNameOf,
     reveal: (p) => opener.revealItemInDir(p),
     initialPaths: () => invoke<string[]>("initial_paths"),
+    writeClipboardText: (text) => clipboard.writeText(text),
     async writeClipboardImage(canvas) {
       const { Image } = await import("@tauri-apps/api/image");
       const { data } = canvas.getContext("2d")!.getImageData(0, 0, canvas.width, canvas.height);
@@ -292,6 +294,7 @@ function browserPlatform(): Platform {
       return [];
     },
     async onOpenPaths() {},
+    writeClipboardText: (text) => navigator.clipboard.writeText(text),
     async writeClipboardImage(canvas) {
       const blob = new Promise<Blob>((resolve, reject) =>
         canvas.toBlob((b) => (b ? resolve(b) : reject(new Error("Couldn't encode the image."))), "image/png"),

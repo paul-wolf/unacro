@@ -13,6 +13,7 @@
     "dialog:allow-save",
     "opener:allow-reveal-item-in-dir",
     "clipboard-manager:allow-read-image",
-    "clipboard-manager:allow-write-image"
+    "clipboard-manager:allow-write-image",
+    "clipboard-manager:allow-write-text"
   ]
 }
