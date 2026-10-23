@@ -68,3 +68,47 @@ describe("crop in saved PDFs", () => {
     expect(out.getPages()[0].getCropBox()).toEqual({ x: 40, y: 300, width: 220, height: 150 });
   });
 });
+
+describe("callouts", async () => {
+  const { layoutCallout, leader, wrapText } = await import("../src/core/callout");
+  const measure = (s: string) => s.length * 7; // monospace stand-in: 7pt per character
+
+  it("wraps text to the box width and breaks long words", () => {
+    expect(wrapText("one two three four", 7 * 9, measure)).toEqual(["one two", "three", "four"]);
+    expect(wrapText("abcdefghij", 7 * 4, measure)).toEqual(["abcd", "efgh", "ij"]);
+    expect(wrapText("first\n\nthird", 100, measure)).toEqual(["first", "", "third"]);
+  });
+
+  it("grows the box with the text, up to a limit", () => {
+    const short = layoutCallout("Hi there", { width: 0, auto: true }, measure);
+    const long = layoutCallout("x ".repeat(80), { width: 0, auto: true }, measure);
+    expect(short.lines).toEqual(["Hi there"]);
+    expect(short.width).toBeLessThan(100);
+    expect(long.width).toBe(260);
+    expect(long.lines.length).toBeGreaterThan(1);
+  });
+
+  it("starts the leader line on the box edge and ends at the target", () => {
+    const m = { id: "c", type: "callout" as const, x1: 100, y1: 500, x2: 400, y2: 300, color: "#e5383b", width: 2, lines: ["Hi"], boxW: 100, rotation: 0 };
+    const l = leader(m)!;
+    expect(l.to).toEqual([300, 200]); // target in local coords (y down from the box's top-left)
+    expect(l.from[1]).toBeCloseTo(2 * 7 + 14 * 1.32); // leaves through the bottom edge, toward the target
+    expect(leader({ ...m, x2: 120, y2: 490 })).toBeNull(); // target inside the box
+  });
+
+  it("draws text with the embedded font in saved PDFs, including Cyrillic", async () => {
+    const { readFileSync } = await import("node:fs");
+    const font = new Uint8Array(readFileSync(new URL("../public/fonts/Inter-Regular.ttf", import.meta.url)));
+    const sources = new Map([["a", await labeledPdf("A", 1)]]);
+    const callout = { id: "c", type: "callout" as const, x1: 60, y1: 300, x2: 200, y2: 100, color: "#e5383b", width: 2, text: "Click here — Натисніть тут", lines: ["Click here —", "Натисніть тут"], boxW: 140, rotation: 0 };
+    const pages = pagesForSource("a", 1).map((p) => ({ ...p, marks: [callout] }));
+    const bytes = await buildPdf({ pages, sources, images: new Map(), calloutFont: font });
+    const task = pdfjs.getDocument({ data: bytes.slice() });
+    const doc = await task.promise;
+    const text = (await (await doc.getPage(1)).getTextContent()).items.map((i: any) => i.str).join(" ");
+    await task.destroy();
+    expect(text).toContain("Click here");
+    expect(text).toContain("Натисніть тут");
+    await expect(buildPdf({ pages, sources, images: new Map() })).rejects.toThrow(/font/);
+  });
+});

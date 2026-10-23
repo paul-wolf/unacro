@@ -6,6 +6,23 @@ import { clonePages, movePages, normRotation, pagesForSource, uid, type Crop, ty
 
 type Tool = "select" | MarkType | "crop";
 import { MARK_COLORS, MARK_WIDTHS, arrowGeometry } from "./core/marks";
+import {
+  CALLOUT_FONT,
+  CALLOUT_FONT_SIZE,
+  CALLOUT_LINE_HEIGHT,
+  CALLOUT_MIN_WIDTH,
+  CALLOUT_PAD_X,
+  CALLOUT_PAD_Y,
+  CALLOUT_TEXT_COLOR,
+  baseline,
+  boxHeight,
+  boxPath,
+  dotRadius,
+  frame,
+  layoutCallout,
+  leader,
+  toLocal,
+} from "./core/callout";
 import { Source, Sources, cropWindow, displaySize, flattenPage, renderInto, renderTextLayer, totalRotation, viewportFor } from "./pdf";
 import {
   IMAGE_LABEL,
@@ -99,6 +116,11 @@ export class App {
   private markColor = MARK_COLORS[0];
   private markWidth = MARK_WIDTHS[1];
   private markupBar = h("div", { class: "markup-bar", role: "toolbar", "aria-label": "Markup" });
+  /** The callout whose text is being typed, and its text box. */
+  private editing: { pageId: string; mark: Mark; isNew: boolean; textarea: HTMLTextAreaElement } | null = null;
+  private calloutFontBytes: Promise<Uint8Array> | null = null;
+  /** The last plain click (press and release without moving) on a shape, to spot double-clicks. */
+  private lastMarkClick: { id: string; t: number; x: number; y: number } | null = null;
   private search = { query: "", hits: [] as string[], cur: -1, running: 0 };
   private currentPageId: string | null = null;
 
@@ -375,6 +397,7 @@ export class App {
   }
 
   private activate(doc: Doc | null) {
+    this.finishEditing();
     if (this.active && this.active !== doc) {
       this.active.scrollTop = this.viewer.scrollTop;
       if (this.active.kind === "model") this.active.view3d = this.modelViewer?.getView() ?? null;
@@ -454,7 +477,13 @@ export class App {
   private async writeTo(doc: Doc, path: string) {
     const format = saveFormatOf(path);
     if (format === "pdf" || format === null) {
-      const bytes = await buildPdf({ pages: doc.pages, sources: this.sources.bytesMap(), images: this.images });
+      const hasCallouts = doc.pages.some((p) => p.marks.some((m) => m.type === "callout"));
+      const bytes = await buildPdf({
+        pages: doc.pages,
+        sources: this.sources.bytesMap(),
+        images: this.images,
+        calloutFont: hasCallouts ? await this.calloutFont() : undefined,
+      });
       await this.platform.write(path, bytes);
       return;
     }
@@ -615,6 +644,7 @@ export class App {
   }
 
   undo() {
+    if (this.editing) return this.finishEditing();
     const d = this.active;
     if (!d?.undo.length) return;
     d.redo.push(d.pages);
@@ -626,6 +656,7 @@ export class App {
   }
 
   redo() {
+    if (this.editing) return this.finishEditing();
     const d = this.active;
     if (!d?.redo.length) return;
     d.undo.push(d.pages);
@@ -1207,6 +1238,7 @@ export class App {
         const content = h("div", { class: "page-content" }, canvas, text, marks, stamps);
         const el = h("div", { class: "page", dataset: { id: ref.id } }, content);
         el.addEventListener("pointerdown", (e) => this.onPagePointerDown(e, ref.id));
+        el.addEventListener("dblclick", (e) => this.onPageDoubleClick(e, ref.id));
         pe = { el, canvas, text, stamps, marks, content, key: "", rendered: null, visible: false };
         this.pageEls.set(ref.id, pe);
         this.pageObserver.observe(el);
@@ -1429,6 +1461,16 @@ export class App {
       this.cropPointer(e, ref);
       return;
     }
+    if (this.editing) {
+      // Clicking anywhere else finishes typing (and does nothing else).
+      if (!(e.target as Element).closest(".callout-editor")) this.finishEditing();
+      return;
+    }
+    if (e.button === 0 && this.tool === "callout" && d.markup) {
+      e.preventDefault();
+      this.createCallout(e, ref);
+      return;
+    }
     if (e.button === 0 && this.tool !== "select" && d.markup) {
       e.preventDefault();
       this.drawMark(e, ref);
@@ -1438,6 +1480,14 @@ export class App {
     const markId = target.closest<SVGElement>("[data-mark]")?.dataset.mark;
     if (e.button === 0 && markId) {
       e.preventDefault();
+      // Pressing again on a callout just after a plain click on it is a double-click: edit its text.
+      const last = this.lastMarkClick;
+      const mark = ref.marks.find((m) => m.id === markId);
+      if (mark?.type === "callout" && last?.id === markId && performance.now() - last.t < 450 && Math.hypot(e.clientX - last.x, e.clientY - last.y) < 6) {
+        this.lastMarkClick = null;
+        this.startEditing(ref.id, mark, false);
+        return;
+      }
       const handle = target.closest<SVGElement>("[data-handle]")?.dataset.handle;
       this.dragMark(e, ref, markId, handle === undefined ? null : Number(handle));
       return;
@@ -1712,6 +1762,14 @@ export class App {
 
   private onKey(e: KeyboardEvent) {
     if (isModalOpen()) return;
+    if (this.editing && e.target === this.editing.textarea) {
+      const mod = isMac() ? e.metaKey : e.ctrlKey;
+      if (e.key === "Escape" || (e.key === "Enter" && mod)) {
+        e.preventDefault();
+        this.finishEditing();
+      }
+      return;
+    }
     const mod = isMac() ? e.metaKey : e.ctrlKey;
     const k = e.key.toLowerCase();
     const inInput = e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement;
@@ -1783,7 +1841,7 @@ export class App {
       return;
     }
     if (this.active?.kind === "pages" && this.active.markup && !e.altKey && !e.shiftKey) {
-      const tools: Record<string, Tool> = { v: "select", r: "rect", o: "oval", a: "arrow", c: "crop" };
+      const tools: Record<string, Tool> = { v: "select", r: "rect", o: "oval", a: "arrow", t: "callout", c: "crop" };
       if (tools[k]) {
         e.preventDefault();
         this.setTool(tools[k]);
@@ -1968,6 +2026,7 @@ export class App {
       tool("rect", "Rectangle", "rect", "R"),
       tool("oval", "Oval", "oval", "O"),
       tool("arrow", "Arrow", "arrow", "A"),
+      tool("callout", "Callout with text", "callout", "T"),
       tool("crop", "Crop", "crop", "C"),
       h("div", { class: "sep" }),
       h("div", { class: "swatches" }, ...swatches),
@@ -2000,8 +2059,12 @@ export class App {
         : `Drag a box around the part to keep.`;
     } else if (hint) {
       hint.textContent = !d || d.kind !== "pages" ? "" : this.tool !== "select"
-        ? `Drag on the ${d.imageFormat ? "image" : "page"} to draw. Shift for squares, circles and 45° arrows. Esc to stop.`
-        : sel ? "Drag to move, drag a handle to resize. Delete to remove." : "";
+        ? this.tool === "callout"
+          ? "Click what you want to point at, or drag from it to where the text should go, then type."
+          : `Drag on the ${d.imageFormat ? "image" : "page"} to draw. Shift for squares, circles and 45° arrows. Esc to stop.`
+        : sel?.type === "callout"
+          ? "Double-click to edit the text. Drag the box or the dot to move them. Delete to remove."
+          : sel ? "Drag to move, drag a handle to resize. Delete to remove." : "";
     }
     this.root.classList.toggle("drawing", !!d?.markup && this.tool !== "select");
   }
@@ -2124,6 +2187,10 @@ export class App {
       const [ax, ay] = P(m.x1, m.y1), [bx, by] = P(m.x2, m.y2);
       const x = Math.min(ax, bx), y = Math.min(ay, by), w = Math.abs(bx - ax), hgt = Math.abs(by - ay);
       let handles: [number, number][] = [];
+      if (m.type === "callout") {
+        nodes.push(this.calloutNode(m, vp, scale, interactive, g, el));
+        continue;
+      }
       if (m.type === "rect") {
         g.append(el("rect", { x, y, width: w, height: hgt, ...paint }), el("rect", { x, y, width: w, height: hgt, ...hit }));
         handles = [[x, y], [x + w, y], [x + w, y + hgt], [x, y + hgt]];
@@ -2226,7 +2293,22 @@ export class App {
       const dx = p[0] - start[0], dy = p[1] - start[1];
       if (!moved && Math.hypot(dx, dy) < 3) return;
       moved = true;
-      if (handle === null) {
+      if (orig.type === "callout") {
+        if (handle === null) {
+          // Move the box; the dot stays on what it points at.
+          const [x1, y1] = vp.convertToPdfPoint(a[0] + dx, a[1] + dy);
+          current = { ...orig, x1, y1 };
+        } else if (handle === 1) {
+          const [x2, y2] = vp.convertToPdfPoint(...p);
+          current = { ...orig, x2, y2 };
+        } else {
+          // Width handle: project the drag onto the text direction.
+          const [ux, uy] = this.calloutAxis(orig, vp);
+          const len = Math.hypot(ux, uy);
+          const boxW = Math.max(CALLOUT_MIN_WIDTH, (orig.boxW ?? CALLOUT_MIN_WIDTH) + (dx * ux + dy * uy) / len / this.scale);
+          current = this.relayout({ ...orig, boxW, autoW: false });
+        }
+      } else if (handle === null) {
         current = this.markFromDisplay(ref, orig, [a[0] + dx, a[1] + dy], [b[0] + dx, b[1] + dy]);
       } else if (orig.type === "arrow") {
         const fixed = handle === 0 ? b : a;
@@ -2242,17 +2324,245 @@ export class App {
       }
       this.renderMarksFor(ref.id, current);
     };
-    const up = () => {
+    const up = (ev: PointerEvent) => {
       pageEl.removeEventListener("pointermove", move);
       pageEl.removeEventListener("pointerup", up);
       pageEl.removeEventListener("pointercancel", up);
-      if (!moved) return;
+      if (!moved) {
+        this.lastMarkClick = { id: markId, t: performance.now(), x: ev.clientX, y: ev.clientY };
+        return;
+      }
+      this.lastMarkClick = null;
       this.commit(d, d.pages.map((p) => (p.id === ref.id ? { ...p, marks: p.marks.map((m) => (m.id === markId ? current : m)) } : p)));
       this.renderMarksFor(ref.id);
     };
     pageEl.addEventListener("pointermove", move);
     pageEl.addEventListener("pointerup", up);
     pageEl.addEventListener("pointercancel", up);
+  }
+
+  // ================================================================ callouts
+
+  private calloutFont(): Promise<Uint8Array> {
+    this.calloutFontBytes ??= fetch(`${import.meta.env.BASE_URL}fonts/Inter-Regular.ttf`)
+      .then((r) => {
+        if (!r.ok) throw new Error("couldn't load the callout font");
+        return r.arrayBuffer();
+      })
+      .then((b) => new Uint8Array(b));
+    return this.calloutFontBytes;
+  }
+
+  private measureCtx: CanvasRenderingContext2D | null = null;
+  private measure(fontSize: number) {
+    this.measureCtx ??= document.createElement("canvas").getContext("2d")!;
+    const ctx = this.measureCtx;
+    ctx.font = `${fontSize}px ${CALLOUT_FONT}, sans-serif`;
+    return (s: string) => ctx.measureText(s).width;
+  }
+
+  /** Re-wrap a callout's text for its width. */
+  private relayout(m: Mark): Mark {
+    const box = layoutCallout(m.text ?? "", { width: m.boxW ?? CALLOUT_MIN_WIDTH, auto: !!m.autoW, fontSize: m.fontSize }, this.measure(m.fontSize ?? CALLOUT_FONT_SIZE));
+    return { ...m, boxW: box.width, lines: box.lines };
+  }
+
+  /** The callout's text direction on screen (display px per point). */
+  private calloutAxis(m: Mark, vp: ReturnType<typeof viewportFor>): [number, number] {
+    const { ux } = frame(m);
+    const [p0x, p0y] = vp.convertToViewportPoint(m.x1, m.y1);
+    const [p1x, p1y] = vp.convertToViewportPoint(m.x1 + ux[0], m.y1 + ux[1]);
+    return [p1x - p0x, p1y - p0y];
+  }
+
+  /** SVG for a callout, drawn in its local frame (see core/callout.ts). */
+  private calloutNode(m: Mark, vp: ReturnType<typeof viewportFor>, scale: number, interactive: boolean, g: Element, el: (tag: string, attrs: Record<string, string | number>) => Element): Element {
+    const { ux, down } = frame(m);
+    const P = (x: number, y: number) => vp.convertToViewportPoint(x, y) as [number, number];
+    const o = P(m.x1, m.y1), px = P(m.x1 + ux[0], m.y1 + ux[1]), pd = P(m.x1 + down[0], m.y1 + down[1]);
+    const local = el("g", { transform: `matrix(${px[0] - o[0]} ${px[1] - o[1]} ${pd[0] - o[0]} ${pd[1] - o[1]} ${o[0]} ${o[1]})` });
+    const w = m.boxW ?? CALLOUT_MIN_WIDTH, h = boxHeight(m);
+    const l = leader(m);
+    const editingThis = this.editing?.mark.id === m.id;
+    if (l) {
+      local.append(
+        el("line", { x1: l.from[0], y1: l.from[1], x2: l.to[0], y2: l.to[1], stroke: m.color, "stroke-width": Math.max(1, m.width * 0.75), "stroke-linecap": "round" }),
+        el("circle", { cx: l.to[0], cy: l.to[1], r: dotRadius(m), fill: m.color, stroke: "#fff", "stroke-width": 1.5 }),
+      );
+      if (interactive) local.append(el("line", { class: "mark-hit", x1: l.from[0], y1: l.from[1], x2: l.to[0], y2: l.to[1], stroke: "transparent", "stroke-width": 12 / scale }));
+    }
+    local.append(
+      el("path", { d: boxPath(w, h, 0, 1.5), fill: "rgba(0,0,0,0.12)" }),
+      el("path", { d: boxPath(w, h), fill: "#fff", stroke: m.color, "stroke-width": m.width, class: interactive ? "callout-box" : "" }),
+    );
+    if (!editingThis) {
+      (m.lines ?? []).forEach((line, i) => {
+        if (!line) return;
+        const t = el("text", { x: CALLOUT_PAD_X, y: baseline(m, i), "font-family": `${CALLOUT_FONT}, sans-serif`, "font-size": m.fontSize ?? CALLOUT_FONT_SIZE, fill: CALLOUT_TEXT_COLOR });
+        t.textContent = line;
+        local.append(t);
+      });
+    }
+    if (interactive && m.id === this.selectedMark && !editingThis) {
+      const s = 10 / scale;
+      const to = l?.to ?? toLocal(m, m.x2, m.y2);
+      local.append(
+        el("circle", { class: "mark-handle", "data-handle": 1, cx: to[0], cy: to[1], r: s / 1.6, "stroke-width": 1.5 / scale }),
+        el("rect", { class: "mark-handle width-handle", "data-handle": 2, x: w - s / 2, y: h / 2 - s, width: s, height: s * 2, rx: s / 4, "stroke-width": 1.5 / scale }),
+      );
+    }
+    g.append(local);
+    g.classList.add("callout");
+    return g;
+  }
+
+  private onPageDoubleClick(e: MouseEvent, pageId: string) {
+    const id = (e.target as Element).closest<SVGElement>("[data-mark]")?.dataset.mark;
+    const ref = this.active?.pages.find((p) => p.id === pageId);
+    const mark = ref?.marks.find((m) => m.id === id);
+    if (mark?.type === "callout") {
+      e.preventDefault();
+      this.startEditing(pageId, mark, false);
+    }
+  }
+
+  /** Click (or drag from) the point to annotate; the box goes where the pointer is released. */
+  private createCallout(e: PointerEvent, ref: PageRef) {
+    const pageEl = this.pageEls.get(ref.id)!.el;
+    const start = this.pointIn(e, ref.id);
+    let end = start;
+    const base: Mark = this.relayout({
+      id: uid("m"),
+      type: "callout",
+      x1: 0, y1: 0, x2: 0, y2: 0,
+      color: this.markColor,
+      width: Math.min(this.markWidth, 3),
+      text: "",
+      boxW: CALLOUT_MIN_WIDTH,
+      autoW: true,
+      fontSize: CALLOUT_FONT_SIZE,
+      rotation: totalRotation(this.sources, ref),
+    });
+    const place = (target: [number, number], at: [number, number]): Mark => {
+      const vp = viewportFor(this.sources, ref, this.scale);
+      const W = (base.boxW ?? CALLOUT_MIN_WIDTH) * this.scale, H = boxHeight(base) * this.scale;
+      const dragged = Math.hypot(at[0] - target[0], at[1] - target[1]) >= 6;
+      // A click puts the box up and to the right of the point; a drag puts it where the pointer ends.
+      const pos: [number, number] = dragged ? at : [target[0] + 40, target[1] - 60];
+      const left = pos[0] >= target[0] ? pos[0] : pos[0] - W;
+      const area = this.visibleArea(ref);
+      const L = Math.min(Math.max(area.left + 4, left), area.left + area.width - W - 4);
+      const T = Math.min(Math.max(area.top + 4, pos[1] - H / 2), area.top + area.height - H - 4);
+      const [x1, y1] = vp.convertToPdfPoint(L, T);
+      const [x2, y2] = vp.convertToPdfPoint(...target);
+      return { ...base, x1, y1, x2, y2 };
+    };
+    pageEl.setPointerCapture(e.pointerId);
+    const move = (ev: PointerEvent) => {
+      end = this.pointIn(ev, ref.id);
+      this.renderMarksFor(ref.id, place(start, end));
+    };
+    const up = () => {
+      pageEl.removeEventListener("pointermove", move);
+      pageEl.removeEventListener("pointerup", up);
+      pageEl.removeEventListener("pointercancel", up);
+      this.startEditing(ref.id, place(start, end), true);
+    };
+    pageEl.addEventListener("pointermove", move);
+    pageEl.addEventListener("pointerup", up);
+    pageEl.addEventListener("pointercancel", up);
+  }
+
+  /** Type into a callout, in place. */
+  private startEditing(pageId: string, mark: Mark, isNew: boolean) {
+    this.finishEditing();
+    const d = this.active;
+    const ref = d?.pages.find((p) => p.id === pageId);
+    const pe = this.pageEls.get(pageId);
+    if (!d || !ref || !pe) return;
+    const vp = viewportFor(this.sources, ref, this.scale);
+    const [ax, ay] = this.calloutAxis(mark, vp);
+    // In-place typing needs upright text on screen; otherwise ask in a dialog.
+    if (Math.abs(ay) > 1e-6 || ax <= 0) return void this.editInDialog(pageId, mark, isNew);
+    this.selectedMark = mark.id;
+    const textarea = h("textarea", { class: "callout-editor", spellcheck: "true", "aria-label": "Callout text", rows: "1" });
+    textarea.value = mark.text ?? "";
+    const s = this.scale;
+    const size = (mark.fontSize ?? CALLOUT_FONT_SIZE) * s;
+    Object.assign(textarea.style, {
+      fontFamily: `${CALLOUT_FONT}, sans-serif`,
+      fontSize: `${size}px`,
+      lineHeight: `${size * CALLOUT_LINE_HEIGHT}px`,
+      padding: `${CALLOUT_PAD_Y * s}px ${CALLOUT_PAD_X * s}px`,
+      color: CALLOUT_TEXT_COLOR,
+    });
+    this.editing = { pageId, mark, isNew, textarea };
+    const sync = () => {
+      const e = this.editing;
+      if (!e) return;
+      e.mark = this.relayout({ ...e.mark, text: textarea.value });
+      const [L, T] = vp.convertToViewportPoint(e.mark.x1, e.mark.y1);
+      Object.assign(textarea.style, {
+        left: `${L}px`,
+        top: `${T}px`,
+        width: `${(e.mark.boxW ?? CALLOUT_MIN_WIDTH) * s}px`,
+        height: `${boxHeight(e.mark) * s}px`,
+      });
+      this.renderMarksFor(pageId, e.mark);
+    };
+    textarea.addEventListener("input", sync);
+    textarea.addEventListener("pointerdown", (ev) => ev.stopPropagation());
+    pe.content.append(textarea);
+    sync();
+    textarea.focus();
+    textarea.select();
+    this.renderMarkupBar();
+  }
+
+  private finishEditing() {
+    const e = this.editing;
+    if (!e) return;
+    this.editing = null;
+    e.textarea.remove();
+    const d = this.active;
+    if (!d) return;
+    const mark = this.relayout({ ...e.mark, text: (e.mark.text ?? "").replace(/\s+$/, "") });
+    const empty = !mark.text?.trim();
+    const exists = d.pages.some((p) => p.marks.some((m) => m.id === mark.id));
+    if (empty) {
+      if (exists) this.deleteMark(mark.id);
+      else this.renderMarksFor(e.pageId);
+      return;
+    }
+    const before = d.pages.find((p) => p.id === e.pageId)?.marks.find((m) => m.id === mark.id);
+    if (before && JSON.stringify(before) === JSON.stringify(mark)) {
+      this.renderMarksFor(e.pageId);
+      return;
+    }
+    this.commit(d, d.pages.map((p) => (p.id === e.pageId ? { ...p, marks: exists ? p.marks.map((m) => (m.id === mark.id ? mark : m)) : [...p.marks, mark] } : p)));
+    this.selectMark(mark.id);
+  }
+
+  private async editInDialog(pageId: string, mark: Mark, isNew: boolean) {
+    const area = h("textarea", { class: "callout-dialog-text", rows: "4" });
+    area.value = mark.text ?? "";
+    const ok = await modal({
+      title: isNew ? "Callout text" : "Edit callout",
+      body: area,
+      cancelValue: false,
+      buttons: [{ label: "Cancel", value: false }, { label: "Done", value: true, kind: "primary" }],
+      onOpen: () => setTimeout(() => area.focus()),
+    });
+    const d = this.active;
+    if (!ok || !d) return void this.renderMarksFor(pageId);
+    const text = area.value.trim();
+    const exists = d.pages.some((p) => p.marks.some((m) => m.id === mark.id));
+    if (!text) {
+      if (exists) this.deleteMark(mark.id);
+      return void this.renderMarksFor(pageId);
+    }
+    const next = this.relayout({ ...mark, text });
+    this.commit(d, d.pages.map((p) => (p.id === pageId ? { ...p, marks: exists ? p.marks.map((m) => (m.id === mark.id ? next : m)) : [...p.marks, next] } : p)));
   }
 
   // ================================================================ crop

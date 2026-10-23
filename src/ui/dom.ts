@@ -43,6 +43,7 @@ const ICONS: Record<string, string> = {
   rect: '<rect x="3.5" y="6" width="17" height="12" rx="1"/>',
   oval: '<ellipse cx="12" cy="12" rx="9" ry="6.5"/>',
   arrow: '<path d="M5 19 19 5"/><path d="M9 5h10v10"/>',
+  callout: '<rect x="3" y="3" width="13" height="9" rx="2.5"/><path d="M12 12 19 20"/><circle cx="19.5" cy="20.5" r="1.3" fill="currentColor"/>',
   convert: '<path d="M4 7h13l-3-3"/><path d="M20 17H7l3 3"/>',
   crop: '<path d="M6 2v14a2 2 0 0 0 2 2h14"/><path d="M18 22V8a2 2 0 0 0-2-2H2"/>',
   copy: '<rect x="8" y="8" width="13" height="13" rx="2"/><path d="M4 16V5a2 2 0 0 1 2-2h11"/>',

@@ -2,6 +2,7 @@
 // All coordinates are PDF user space (y up), the same space marks are stored in.
 
 import type { Mark } from "./model";
+import { drawCalloutOnCanvas } from "./callout";
 
 export const MARK_COLORS = ["#e5383b", "#f59f00", "#ffd43b", "#2f9e44", "#1c7ed6", "#7048e8", "#111111", "#ffffff"];
 export const MARK_WIDTHS = [1.5, 3, 6];
@@ -30,6 +31,7 @@ export function hexToRgb01(hex: string): [number, number, number] {
 
 /** Anything that can draw paths: a 2D canvas already transformed to PDF user space. */
 export function drawMarkOnCanvas(ctx: CanvasRenderingContext2D, m: Mark) {
+  if (m.type === "callout") return drawCalloutOnCanvas(ctx, m);
   ctx.save();
   ctx.strokeStyle = m.color;
   ctx.fillStyle = m.color;

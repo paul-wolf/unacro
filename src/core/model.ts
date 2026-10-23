@@ -16,7 +16,7 @@ export interface Stamp {
 }
 
 /** A markup shape drawn on a page. */
-export type MarkType = "rect" | "oval" | "arrow";
+export type MarkType = "rect" | "oval" | "arrow" | "callout";
 
 export interface Mark {
   id: string;
@@ -33,6 +33,17 @@ export interface Mark {
   color: string;
   /** Line width in PDF points. */
   width: number;
+  // Callouts only. (x1, y1) is the box's top-left corner and (x2, y2) the point the line goes to.
+  text?: string;
+  /** Text already wrapped into lines, so every renderer draws exactly the same thing. */
+  lines?: string[];
+  /** Box width in points. */
+  boxW?: number;
+  /** Width follows the text (until the user resizes it). */
+  autoW?: boolean;
+  fontSize?: number;
+  /** Counter-clockwise rotation of the callout's frame in PDF space (0, 90, 180, 270). */
+  rotation?: number;
 }
 
 /** A crop rectangle in the source page's PDF user space (x1 < x2, y1 < y2). */

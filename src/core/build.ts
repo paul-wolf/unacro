@@ -4,9 +4,36 @@
 // metadata), the source that contributes the most pages is used as the base
 // document and edited in place. Pages from other sources are copied in.
 
-import { LineCapStyle, PDFDocument, PDFName, PDFPage, degrees, rgb } from "pdf-lib";
+import { LineCapStyle, PDFDocument, PDFFont, PDFName, PDFPage, degrees, rgb } from "pdf-lib";
+import fontkit from "@pdf-lib/fontkit";
 import type { Mark, PageRef } from "./model";
 import { arrowGeometry, hexToRgb01 } from "./marks";
+import { CALLOUT_MIN_WIDTH, CALLOUT_PAD_X, CALLOUT_TEXT_COLOR, baseline, boxHeight, boxPath, dotRadius, frame, leader } from "./callout";
+
+/** Draw a callout in its local frame (see callout.ts) using PDF graphics. */
+function drawCallout(page: PDFPage, m: Mark, font: PDFFont) {
+  const { ux, down } = frame(m);
+  const deg = m.rotation ?? 0;
+  const color = rgb(...hexToRgb01(m.color));
+  const w = m.boxW ?? CALLOUT_MIN_WIDTH, h = boxHeight(m);
+  // Local (x right, y down) -> user space.
+  const at = (lx: number, ly: number) => ({ x: m.x1 + lx * ux[0] + ly * down[0], y: m.y1 + lx * ux[1] + ly * down[1] });
+  const l = leader(m);
+  if (l) {
+    page.drawLine({ start: at(...l.from), end: at(...l.to), thickness: Math.max(1, m.width * 0.75), color, lineCap: LineCapStyle.Round });
+    const c = at(...l.to);
+    page.drawCircle({ x: c.x, y: c.y, size: dotRadius(m), color, borderColor: rgb(1, 1, 1), borderWidth: 1.5 });
+  }
+  // drawSvgPath: translate to (x, y), rotate, then flip y, which matches the local frame.
+  page.drawSvgPath(boxPath(w, h, 0, 1.5), { x: m.x1, y: m.y1, rotate: degrees(deg), color: rgb(0, 0, 0), opacity: 0.12 });
+  page.drawSvgPath(boxPath(w, h), { x: m.x1, y: m.y1, rotate: degrees(deg), color: rgb(1, 1, 1), borderColor: color, borderWidth: m.width });
+  const textColor = rgb(...hexToRgb01(CALLOUT_TEXT_COLOR));
+  (m.lines ?? []).forEach((line, i) => {
+    if (!line) return;
+    const p = at(CALLOUT_PAD_X, baseline(m, i));
+    page.drawText(line, { x: p.x, y: p.y, size: m.fontSize ?? 14, font, color: textColor, rotate: degrees(deg) });
+  });
+}
 
 /** Draw a markup shape as PDF vector graphics. */
 function drawMark(page: PDFPage, m: Mark) {
@@ -40,6 +67,8 @@ export interface BuildInput {
   sources: Map<string, Uint8Array>;
   /** PNG bytes of stamp images, by image id. */
   images: Map<string, Uint8Array>;
+  /** TrueType font for callout text. Needed only if a page has callouts. */
+  calloutFont?: Uint8Array;
 }
 
 const INHERITABLE = ["MediaBox", "CropBox", "Rotate", "Resources"];
@@ -70,7 +99,7 @@ function pickBase(pages: PageRef[]): string | null {
   return best;
 }
 
-export async function buildPdf({ pages, sources, images }: BuildInput): Promise<Uint8Array> {
+export async function buildPdf({ pages, sources, images, calloutFont }: BuildInput): Promise<Uint8Array> {
   if (pages.length === 0) throw new Error("A document needs at least one page.");
 
   const baseId = pickBase(pages)!;
@@ -120,6 +149,13 @@ export async function buildPdf({ pages, sources, images }: BuildInput): Promise<
   for (let i = out.getPageCount() - 1; i >= 0; i--) out.removePage(i);
   finalPages.forEach((page, i) => out.insertPage(i, page));
 
+  let font: PDFFont | null = null;
+  if (pages.some((p) => p.marks?.some((m) => m.type === "callout"))) {
+    if (!calloutFont) throw new Error("The callout font is missing.");
+    out.registerFontkit(fontkit);
+    font = await out.embedFont(calloutFont, { subset: false });
+  }
+
   // Rotation and stamps.
   const embedded = new Map<string, Awaited<ReturnType<PDFDocument["embedPng"]>>>();
   for (let i = 0; i < pages.length; i++) {
@@ -133,7 +169,10 @@ export async function buildPdf({ pages, sources, images }: BuildInput): Promise<
       const { x1, y1, x2, y2 } = ref.crop;
       page.setCropBox(x1, y1, x2 - x1, y2 - y1);
     }
-    for (const m of ref.marks ?? []) drawMark(page, m);
+    for (const m of ref.marks ?? []) {
+      if (m.type === "callout") drawCallout(page, m, font!);
+      else drawMark(page, m);
+    }
     for (const s of ref.stamps) {
       let img = embedded.get(s.imageId);
       if (!img) {

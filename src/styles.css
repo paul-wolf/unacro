@@ -1,3 +1,11 @@
+@font-face {
+  font-family: "UnacroInter";
+  src: url("/fonts/Inter-Regular.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: block;
+}
+
 :root {
   --bg: #f6f5f2;
   --chrome: #ecebe6;
@@ -449,3 +457,15 @@ button { font: inherit; color: inherit; }
 .markup-bar.has-crop-draft .apply-crop { display: inline-block; }
 #app.drawing .page .crop-handle.c0, #app.drawing .page .crop-handle.c2 { cursor: nwse-resize !important; }
 #app.drawing .page .crop-handle.c1, #app.drawing .page .crop-handle.c3 { cursor: nesw-resize !important; }
+
+/* ---------------------------------------------------------------- callouts */
+
+.callout-box { pointer-events: all; cursor: move; }
+.mark.callout .mark-handle { cursor: grab; }
+.mark.callout .width-handle { cursor: ew-resize; }
+#app.drawing .callout-box { pointer-events: none; }
+.callout-editor {
+  position: absolute; z-index: 7; box-sizing: border-box; margin: 0; border: 0; outline: none; resize: none; overflow: hidden;
+  background: transparent; white-space: pre-wrap; overflow-wrap: anywhere; caret-color: var(--accent);
+}
+.callout-dialog-text { width: 100%; font: 14px/1.4 "UnacroInter", var(--font); padding: 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text); }

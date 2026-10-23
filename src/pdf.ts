@@ -12,6 +12,7 @@ import type { PageText } from "./core/markdown";
 import type { ImageFormat } from "./core/formats";
 import { decodeImage, imagePagesToPdf } from "./images";
 import { drawMarkOnCanvas } from "./core/marks";
+import { CALLOUT_FONT } from "./core/callout";
 
 pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
 const ASSETS = `${import.meta.env.BASE_URL}pdfjs/`;
@@ -288,6 +289,7 @@ export async function flattenPage(
     await page.render({ canvas, viewport: vp, background: opaque ? "#fff" : "rgba(0,0,0,0)" } as any).promise;
   }
 
+  if (ref.marks?.some((m) => m.type === "callout")) await document.fonts.load(`14px ${CALLOUT_FONT}`);
   ctx.save();
   ctx.setTransform(a, b, c, d, e, f);
   for (const m of ref.marks ?? []) drawMarkOnCanvas(ctx, m);

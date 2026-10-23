@@ -10,6 +10,7 @@ See [GOALS.md](GOALS.md) for what Unacro is (and deliberately isn't).
 - **Screenshots**: New from Clipboard (`Ctrl+N`) opens the image on your clipboard as a new document. Mark it up, press `Ctrl+C`, and paste it anywhere, with no saving needed. A copied screenshot closes without a "Save changes?" prompt.
 - **Convert**: open any image or page as JPEG, PNG, TIFF or BMP (or images as a PDF) in a new tab, then save it next to the original. JPEG quality is set once (default 85%) under Convert → JPEG Quality, which shows the resulting file size. Saving an untouched image in its own format copies it byte for byte, so nothing is recompressed and its metadata survives.
 - **Crop**: drag a box (crop tool in the markup bar, or `C`), adjust it, press Enter. Works on images and PDF pages, with rotation and markup, and can be undone. "Remove Crop" is on the page's right-click menu.
+- **Callouts**: a rounded, outlined box with your text, joined by a straight line to a dot on what it points at (tool `T`). Click the spot (or drag from it to where the text should go) and type. Drag the box or the dot, widen the box, and double-click to edit the text. Any language works, Cyrillic included.
 - **Markup**: rectangles, ovals and arrows in 8 colours and 3 line widths, from the markup bar above the image (shown automatically for images, toggled with **Markup** for PDFs). Shapes stay editable until you save, then become part of the file.
 - **Images**: rotate, sign, then save back in the same format, or export as PDF. Multi-page TIFFs open as several pages. HEIC works on macOS.
 - **Combine**: turn several PDFs and images into one new PDF, insert pages from another PDF or an image anywhere, copy pages between open documents (drag thumbnails onto another tab, or `Ctrl+C` / `Ctrl+V`)
@@ -34,7 +35,8 @@ See [GOALS.md](GOALS.md) for what Unacro is (and deliberately isn't).
 | Zoom in / out / fit (or reset a 3D view) | `Ctrl++` / `Ctrl+-` / `Ctrl+0`, or `Ctrl` + scroll |
 | Find | `Ctrl+F`, then `Enter` / `Shift+Enter` |
 | Copy the image with its markup | `Ctrl+C` |
-| Markup tools: select / rectangle / oval / arrow / crop | `V` / `R` / `O` / `A` / `C` (hold `Shift` while drawing for squares, circles and 45° arrows) |
+| Markup tools: select / rectangle / oval / arrow / callout / crop | `V` / `R` / `O` / `A` / `T` / `C` (hold `Shift` while drawing for squares, circles and 45° arrows) |
+| Finish typing a callout | `Esc`, `Ctrl+Enter`, or click elsewhere (`Enter` starts a new line) |
 | Apply / cancel a crop | `Enter` / `Esc` |
 | Remove the selected shape | `Delete` |
 
@@ -104,6 +106,7 @@ The tag starts the [Release workflow](.github/workflows/release.yml). It builds 
 | Combining, rotating, signing, saving | [pdf-lib](https://pdf-lib.js.org) | MIT |
 | TIFF reading and writing | [UTIF.js](https://github.com/photopea/UTIF.js) | MIT |
 | 3D viewer (loaded only for STL files) | [three.js](https://threejs.org) | MIT |
+| Callout text (screen, images and PDFs) | [Inter](https://rsms.me/inter/) font, embedded with [@pdf-lib/fontkit](https://github.com/Hopding/fontkit) | OFL-1.1 (font), MIT |
 
 The UI is plain TypeScript with no framework.
 
