@@ -21,7 +21,7 @@ What drives them away from Preview, and what Unacro must get right:
 
 1. **View quickly.** PDFs and images open instantly, scroll smoothly, zoom, show page thumbnails, and (for PDFs) search text.
 2. **Images and screenshots are first-class.** JPEG, PNG, GIF, HEIC, TIFF and BMP open like any document. Edits save back in the image's own format. **New from Clipboard** (`Ctrl/⌘+N`) turns a screenshot on the clipboard into a new document straight away.
-3. **Mark up screenshots and images.** Arrows, rectangles, text, highlight and freehand drawing, quick to apply and easy to change. *(Next up; not built yet.)*
+3. **Mark up screenshots and images.** Rectangles, ovals and arrows in a few colours and widths, from a bar above the image, editable until saved (done). Speech bubbles with text come next. The core workflow is paste a screenshot, mark it up, copy it, with no saving in between.
 4. **Convert without friction.** Turning HEIC (or any image) into JPEG or PNG, or images into a PDF, is a single obvious action.
 5. **Combine documents.** Merge PDFs and images into one PDF, insert pages from another file at any position, and move pages between open documents.
 6. **Organize pages.** Reorder by drag and drop, rotate, delete, and select several pages at once.
@@ -68,7 +68,7 @@ These are deliberately out of scope. They are not "maybe later".
 
 In rough order:
 
-1. **Markup tools** for screenshots, images and PDFs: arrow, rectangle, ellipse, text, highlight, freehand. Editable until saved, and baked into the file on save.
+1. **Speech bubbles with text**, then maybe plain text labels, highlight and freehand. (Rectangles, ovals and arrows are done.)
 2. **One-click conversion:** "Convert to JPEG/PNG" for images (especially HEIC), writing next to the original without a dialog, plus batch conversion of several files.
 3. **Crop** for images and screenshots.
 4. **HEIC on Linux.** It works on macOS through the system. On Linux it needs libheif, which is LGPL, so this needs a decision about the licensing principle (for example, using the system's libheif as an optional, dynamically loaded library).

@@ -7,7 +7,8 @@ See [GOALS.md](GOALS.md) for what Unacro is (and deliberately isn't).
 ## Features
 
 - **View**: PDFs, images (JPEG, PNG, GIF, HEIC, TIFF, BMP) and STL 3D models, with continuous scrolling, zoom, page thumbnails, text selection and find (`Ctrl+F`)
-- **Screenshots**: New from Clipboard (`Ctrl+N`) opens the image on your clipboard as a new document
+- **Screenshots**: New from Clipboard (`Ctrl+N`) opens the image on your clipboard as a new document. Mark it up, press `Ctrl+C`, and paste it anywhere, with no saving needed. A copied screenshot closes without a "Save changes?" prompt.
+- **Markup**: rectangles, ovals and arrows in 8 colours and 3 line widths, from the markup bar above the image (shown automatically for images, toggled with **Markup** for PDFs). Shapes stay editable until you save, then become part of the file.
 - **Images**: rotate, sign, then save back in the same format, or export as PDF. Multi-page TIFFs open as several pages. HEIC works on macOS.
 - **Combine**: turn several PDFs and images into one new PDF, insert pages from another PDF or an image anywhere, copy pages between open documents (drag thumbnails onto another tab, or `Ctrl+C` / `Ctrl+V`)
 - **Organize**: drag to reorder, rotate, delete, multi-select with `Shift` / `Ctrl`, open a selection as a new document
@@ -30,6 +31,9 @@ See [GOALS.md](GOALS.md) for what Unacro is (and deliberately isn't).
 | Select all pages | `Ctrl+A` (with the sidebar focused) |
 | Zoom in / out / fit (or reset a 3D view) | `Ctrl++` / `Ctrl+-` / `Ctrl+0`, or `Ctrl` + scroll |
 | Find | `Ctrl+F`, then `Enter` / `Shift+Enter` |
+| Copy the image with its markup | `Ctrl+C` |
+| Markup tools: select / rectangle / oval / arrow | `V` / `R` / `O` / `A` (hold `Shift` while drawing for squares, circles and 45° arrows) |
+| Remove the selected shape | `Delete` |
 
 On macOS, use `⌘` instead of `Ctrl`.
 

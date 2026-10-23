@@ -4,8 +4,35 @@
 // metadata), the source that contributes the most pages is used as the base
 // document and edited in place. Pages from other sources are copied in.
 
-import { PDFDocument, PDFName, PDFPage, degrees } from "pdf-lib";
-import type { PageRef } from "./model";
+import { LineCapStyle, PDFDocument, PDFName, PDFPage, degrees, rgb } from "pdf-lib";
+import type { Mark, PageRef } from "./model";
+import { arrowGeometry, hexToRgb01 } from "./marks";
+
+/** Draw a markup shape as PDF vector graphics. */
+function drawMark(page: PDFPage, m: Mark) {
+  const color = rgb(...hexToRgb01(m.color));
+  const x = Math.min(m.x1, m.x2), y = Math.min(m.y1, m.y2);
+  const w = Math.abs(m.x2 - m.x1), h = Math.abs(m.y2 - m.y1);
+  if (m.type === "rect") {
+    page.drawRectangle({ x, y, width: w, height: h, borderColor: color, borderWidth: m.width });
+  } else if (m.type === "oval") {
+    page.drawEllipse({ x: x + w / 2, y: y + h / 2, xScale: w / 2, yScale: h / 2, borderColor: color, borderWidth: m.width });
+  } else {
+    const g = arrowGeometry(m);
+    if (!g) return;
+    const [[sx, sy], [ex, ey]] = g.shaft;
+    page.drawLine({ start: { x: sx, y: sy }, end: { x: ex, y: ey }, thickness: m.width, color, lineCap: LineCapStyle.Round });
+    // drawSvgPath flips y, so negate it to stay in PDF user space.
+    const [a, b, c] = g.head;
+    page.drawSvgPath(`M ${a[0]} ${-a[1]} L ${b[0]} ${-b[1]} L ${c[0]} ${-c[1]} Z`, {
+      x: 0,
+      y: 0,
+      color,
+      borderColor: color,
+      borderWidth: Math.min(m.width, 2),
+    });
+  }
+}
 
 export interface BuildInput {
   pages: PageRef[];
@@ -102,6 +129,7 @@ export async function buildPdf({ pages, sources, images }: BuildInput): Promise<
       const current = page.getRotation().angle;
       page.setRotation(degrees((((current + ref.rotation) % 360) + 360) % 360));
     }
+    for (const m of ref.marks ?? []) drawMark(page, m);
     for (const s of ref.stamps) {
       let img = embedded.get(s.imageId);
       if (!img) {

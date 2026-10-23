@@ -176,6 +176,7 @@ button { font: inherit; color: inherit; }
   touch-action: none;
 }
 .thumb-frame {
+  position: relative;
   background: #fff;
   box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.12);
   border-radius: 2px;
@@ -366,3 +367,40 @@ button { font: inherit; color: inherit; }
 .model-canvas { display: block; width: 100%; height: 100%; touch-action: none; cursor: grab; }
 .model-canvas:active { cursor: grabbing; }
 .model-error { padding: 24px; color: var(--muted); text-align: center; }
+
+/* ---------------------------------------------------------------- markup */
+
+#app { grid-template-rows: auto auto auto 1fr auto; }
+.markup-bar {
+  display: none;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 10px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--line);
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+#app.markup-on .markup-bar { display: flex; }
+.markup-bar .sep { width: 1px; height: 20px; background: var(--line); margin: 0 6px; flex: none; }
+.tool.active { background: var(--accent-soft); color: var(--accent); }
+.markup-bar .tool.active { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 45%, transparent); }
+.swatches { display: flex; gap: 4px; padding: 0 2px; }
+.swatch {
+  width: 20px; height: 20px; padding: 0; border-radius: 50%; cursor: pointer; flex: none;
+  background: var(--swatch); border: 1px solid rgba(0, 0, 0, 0.25);
+}
+.swatch.active { box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent); }
+.tool.width { width: 32px; }
+.width-sample { display: block; width: 18px; background: currentColor; border-radius: 2px; }
+.markup-hint { color: var(--muted); font-size: 12px; margin-right: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+
+.marks { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 3; pointer-events: none; overflow: visible; }
+.stamps { z-index: 4; }
+.mark-hit { pointer-events: stroke; cursor: move; }
+.mark-handle { pointer-events: all; fill: #fff; stroke: var(--accent); stroke-width: 1.5; cursor: grab; }
+.mark.selected > :first-child { filter: drop-shadow(0 0 1.5px rgba(15, 118, 110, 0.9)); }
+#app.drawing .page, #app.drawing .page * { cursor: crosshair !important; }
+#app.drawing .textLayer { pointer-events: none; }
+#app.drawing .mark-hit, #app.drawing .mark-handle { pointer-events: none; }

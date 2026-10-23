@@ -11,6 +11,7 @@ import { extractPageText } from "./core/extract";
 import type { PageText } from "./core/markdown";
 import type { ImageFormat } from "./core/formats";
 import { decodeImage, imagePagesToPdf } from "./images";
+import { drawMarkOnCanvas } from "./core/marks";
 
 pdfjs.GlobalWorkerOptions.workerSrc = workerUrl;
 const ASSETS = `${import.meta.env.BASE_URL}pdfjs/`;
@@ -273,6 +274,11 @@ export async function flattenPage(
   } else {
     await page.render({ canvas, viewport: vp, background: opaque ? "#fff" : "rgba(0,0,0,0)" } as any).promise;
   }
+
+  ctx.save();
+  ctx.setTransform(a, b, c, d, e, f);
+  for (const m of ref.marks ?? []) drawMarkOnCanvas(ctx, m);
+  ctx.restore();
 
   for (const s of ref.stamps) {
     const png = stampImages.get(s.imageId);

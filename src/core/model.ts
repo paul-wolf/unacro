@@ -15,6 +15,26 @@ export interface Stamp {
   rotation: number;
 }
 
+/** A markup shape drawn on a page. */
+export type MarkType = "rect" | "oval" | "arrow";
+
+export interface Mark {
+  id: string;
+  type: MarkType;
+  /**
+   * Two points in the source page's PDF user space. For rectangles and ovals they
+   * are opposite corners of the bounding box; for arrows, the tail (1) and the tip (2).
+   */
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+  /** "#rrggbb" */
+  color: string;
+  /** Line width in PDF points. */
+  width: number;
+}
+
 /** One page in a document: a reference to a page of some loaded source file. */
 export interface PageRef {
   id: string;
@@ -24,6 +44,7 @@ export interface PageRef {
   /** Extra clockwise rotation added on top of the page's own /Rotate (0, 90, 180, 270). */
   rotation: number;
   stamps: Stamp[];
+  marks: Mark[];
 }
 
 let counter = 0;
@@ -42,6 +63,7 @@ export function clonePages(pages: PageRef[]): PageRef[] {
     ...p,
     id: uid("p"),
     stamps: p.stamps.map((s) => ({ ...s, id: uid("s") })),
+    marks: p.marks.map((m) => ({ ...m, id: uid("m") })),
   }));
 }
 
@@ -52,6 +74,7 @@ export function pagesForSource(sourceId: string, pageCount: number): PageRef[] {
     index,
     rotation: 0,
     stamps: [],
+    marks: [],
   }));
 }
 

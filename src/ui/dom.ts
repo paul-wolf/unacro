@@ -38,6 +38,12 @@ const ICONS: Record<string, string> = {
   undo: '<path d="M9 14 4 9l5-5"/><path d="M4 9h11a5 5 0 0 1 0 10h-3"/>',
   redo: '<path d="m15 14 5-5-5-5"/><path d="M20 9H9a5 5 0 0 0 0 10h3"/>',
   up: '<path d="m18 15-6-6-6 6"/>',
+  pen: '<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/>',
+  pointer: '<path d="m4 4 7 17 2.5-7.5L21 11z"/>',
+  rect: '<rect x="3.5" y="6" width="17" height="12" rx="1"/>',
+  oval: '<ellipse cx="12" cy="12" rx="9" ry="6.5"/>',
+  arrow: '<path d="M5 19 19 5"/><path d="M9 5h10v10"/>',
+  copy: '<rect x="8" y="8" width="13" height="13" rx="2"/><path d="M4 16V5a2 2 0 0 1 2-2h11"/>',
   down: '<path d="m6 9 6 6 6-6"/>',
 };
 

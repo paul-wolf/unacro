@@ -2,7 +2,8 @@
 
 import { buildPdf } from "./core/build";
 import { pagesToMarkdown } from "./core/markdown";
-import { clonePages, movePages, normRotation, pagesForSource, uid, type PageRef, type Stamp } from "./core/model";
+import { clonePages, movePages, normRotation, pagesForSource, uid, type Mark, type MarkType, type PageRef, type Stamp } from "./core/model";
+import { MARK_COLORS, MARK_WIDTHS, arrowGeometry } from "./core/marks";
 import { Source, Sources, displaySize, flattenPage, renderInto, renderTextLayer, totalRotation, viewportFor } from "./pdf";
 import {
   IMAGE_LABEL,
@@ -45,6 +46,10 @@ interface Doc {
   imageFormat: ImageFormat | null;
   model: LoadedModel | null;
   view3d: ViewState | null;
+  /** Whether the markup bar is shown for this document. */
+  markup: boolean;
+  /** Snapshot of `pages` when the document was last copied to the clipboard. */
+  copied: string | null;
 }
 
 interface PageEl {
@@ -52,6 +57,7 @@ interface PageEl {
   canvas: HTMLCanvasElement;
   text: HTMLDivElement;
   stamps: HTMLDivElement;
+  marks: SVGSVGElement;
   key: string;
   rendered: string | null;
   visible: boolean;
@@ -64,6 +70,9 @@ const THUMB_W = 116;
 const THUMB_H = 150;
 const PAGE_GAP = 16;
 
+const SVG_NS = "http://www.w3.org/2000/svg";
+const MARKUP_KEY = "unacro.markup";
+
 const snapshot = (pages: PageRef[]) => JSON.stringify(pages);
 const isDirty = (d: Doc) => snapshot(d.pages) !== d.saved;
 
@@ -75,6 +84,11 @@ export class App {
   private clipboard: PageRef[] = [];
   private placing: Signature | null = null;
   private selectedStamp: string | null = null;
+  private selectedMark: string | null = null;
+  private tool: "select" | MarkType = "select";
+  private markColor = MARK_COLORS[0];
+  private markWidth = MARK_WIDTHS[1];
+  private markupBar = h("div", { class: "markup-bar", role: "toolbar", "aria-label": "Markup" });
   private search = { query: "", hits: [] as string[], cur: -1, running: 0 };
   private currentPageId: string | null = null;
 
@@ -168,6 +182,7 @@ export class App {
       btn("delete", "Delete selected pages (Delete)", () => this.deleteSelected(), "trash"),
       h("div", { class: "sep" }),
       btn("sign", "Add a signature", () => this.showSignMenu(this.buttons.sign), "sign", "Sign"),
+      btn("markup", "Show or hide the markup tools", () => this.toggleMarkup(), "pen", "Markup"),
       btn("md", "Markdown", () => this.showMarkdownMenu(this.buttons.md), "md", "Markdown"),
       h("div", { class: "spacer" }),
       btn("zoomout", `Zoom out (${MOD}−)`, () => this.zoomBy(1 / 1.2), "minus"),
@@ -205,7 +220,8 @@ export class App {
     });
 
     const workspace = h("main", { class: "workspace" }, this.sidebar, this.viewer, this.modelHost, this.empty);
-    this.root.append(this.toolbar, this.tabs, workspace, this.status);
+    this.buildMarkupBar();
+    this.root.append(this.toolbar, this.tabs, this.markupBar, workspace, this.status);
   }
 
   // ================================================================ documents
@@ -216,6 +232,8 @@ export class App {
       imageFormat: null,
       model: null,
       view3d: null,
+      markup: !!extra.imageFormat,
+      copied: null,
       id: uid("d"),
       name,
       path,
@@ -352,6 +370,7 @@ export class App {
     }
     this.active = doc;
     this.selectedStamp = null;
+    this.selectedMark = null;
     this.placing = null;
     this.clearSearch(false);
     this.render(true);
@@ -361,7 +380,10 @@ export class App {
   }
 
   async closeDoc(doc: Doc): Promise<boolean> {
-    if (isDirty(doc)) {
+    // A never-saved document (e.g. a pasted screenshot) whose current state is on
+    // the clipboard closes without asking: the clipboard already has the work.
+    const copiedAsIs = !doc.path && doc.copied === snapshot(doc.pages);
+    if (isDirty(doc) && !copiedAsIs) {
       this.activate(doc);
       const choice = await modal<"save" | "discard" | "cancel">({
         title: `Save changes to “${doc.name}”?`,
@@ -395,7 +417,7 @@ export class App {
 
   private async confirmQuit(): Promise<boolean> {
     for (const d of [...this.docs]) {
-      if (isDirty(d) && !(await this.closeDoc(d))) return false;
+      if (!(await this.closeDoc(d))) return false;
     }
     return true;
   }
@@ -576,6 +598,7 @@ export class App {
     d.redo.push(d.pages);
     d.pages = d.undo.pop()!;
     this.selectedStamp = null;
+    this.selectedMark = null;
     this.render();
   }
 
@@ -585,6 +608,7 @@ export class App {
     d.undo.push(d.pages);
     d.pages = d.redo.pop()!;
     this.selectedStamp = null;
+    this.selectedMark = null;
     this.render();
   }
 
@@ -881,6 +905,8 @@ export class App {
     const d = this.active;
     this.root.classList.toggle("has-doc", !!d);
     this.root.classList.toggle("model-doc", d?.kind === "model");
+    this.root.classList.toggle("markup-on", d?.kind === "pages" && d.markup);
+    this.renderMarkupBar();
     this.renderTabs();
     this.renderToolbarState();
     this.renderStatus();
@@ -938,7 +964,9 @@ export class App {
   private renderToolbarState() {
     const d = this.active;
     const pages = d?.kind === "pages";
-    for (const k of ["save", "insert", "rotl", "rotr", "delete", "sign", "md"]) this.buttons[k].disabled = !pages;
+    for (const k of ["save", "insert", "rotl", "rotr", "delete", "sign", "md", "markup"]) this.buttons[k].disabled = !pages;
+    this.buttons.markup.classList.toggle("active", !!(pages && d?.markup));
+    this.buttons.markup.setAttribute("aria-pressed", String(!!(pages && d?.markup)));
     for (const k of ["zoomin", "zoomout"]) this.buttons[k].disabled = !d;
     this.buttons.undo.disabled = !d?.undo.length;
     this.buttons.redo.disabled = !d?.redo.length;
@@ -1085,6 +1113,7 @@ export class App {
       frame.style.width = `${Math.round(size.width * s)}px`;
       frame.style.height = `${Math.round(size.height * s)}px`;
       (t.el.lastElementChild as HTMLElement).textContent = String(i + 1);
+      this.renderThumbMarks(ref);
       keep.add(ref.id);
       els.push(t.el);
     });
@@ -1144,9 +1173,11 @@ export class App {
         const canvas = h("canvas", { class: "page-canvas" });
         const text = h("div", { class: "textLayer" });
         const stamps = h("div", { class: "stamps" });
-        const el = h("div", { class: "page", dataset: { id: ref.id } }, canvas, text, stamps);
+        const marks = document.createElementNS(SVG_NS, "svg") as SVGSVGElement;
+        marks.classList.add("marks");
+        const el = h("div", { class: "page", dataset: { id: ref.id } }, canvas, text, marks, stamps);
         el.addEventListener("pointerdown", (e) => this.onPagePointerDown(e, ref.id));
-        pe = { el, canvas, text, stamps, key: "", rendered: null, visible: false };
+        pe = { el, canvas, text, stamps, marks, key: "", rendered: null, visible: false };
         this.pageEls.set(ref.id, pe);
         this.pageObserver.observe(el);
       }
@@ -1283,6 +1314,7 @@ export class App {
       return el;
     });
     pe.stamps.replaceChildren(...nodes);
+    this.renderMarksFor(pageId);
   }
 
   private imageUrls = new Map<string, string>();
@@ -1301,6 +1333,7 @@ export class App {
     e.stopPropagation();
     e.preventDefault();
     const d = this.active!;
+    if (this.selectedMark) this.selectMark(null);
     if (this.selectedStamp !== s.id) {
       this.selectedStamp = s.id;
       this.renderStampsFor(ref.id);
@@ -1351,6 +1384,20 @@ export class App {
       this.placeAt(ref, e.clientX - r.left, e.clientY - r.top);
       return;
     }
+    if (e.button === 0 && this.tool !== "select" && d.markup) {
+      e.preventDefault();
+      this.drawMark(e, ref);
+      return;
+    }
+    const target = e.target as Element;
+    const markId = target.closest<SVGElement>("[data-mark]")?.dataset.mark;
+    if (e.button === 0 && markId) {
+      e.preventDefault();
+      const handle = target.closest<SVGElement>("[data-handle]")?.dataset.handle;
+      this.dragMark(e, ref, markId, handle === undefined ? null : Number(handle));
+      return;
+    }
+    if (this.selectedMark) this.selectMark(null);
     if (this.selectedStamp) {
       const prev = d.pages.find((p) => p.stamps.some((s) => s.id === this.selectedStamp));
       this.selectedStamp = null;
@@ -1600,6 +1647,8 @@ export class App {
     if (e.key === "Escape") {
       closeMenus();
       if (this.placing) this.stopPlacing();
+      else if (this.tool !== "select") this.setTool("select");
+      else if (this.selectedMark) this.selectMark(null);
       else if (this.selectedStamp) {
         const id = this.selectedStamp;
         this.selectedStamp = null;
@@ -1637,6 +1686,16 @@ export class App {
         return;
       }
       if (inInput && (k === "z" || k === "y")) return; // let text fields undo themselves
+      if (k === "c" && !e.shiftKey && !e.altKey) {
+        // The sidebar copies pages itself; selected text copies as text.
+        const text = window.getSelection();
+        if (e.defaultPrevented || inInput || (text && !text.isCollapsed && text.toString().trim())) return;
+        if (this.active?.kind === "pages") {
+          e.preventDefault();
+          void this.copyImage();
+        }
+        return;
+      }
       const fn = act[k];
       if (fn) {
         e.preventDefault();
@@ -1645,14 +1704,368 @@ export class App {
       return;
     }
     if (inInput) return;
+    if (this.active?.kind === "pages" && this.active.markup && !e.altKey && !e.shiftKey) {
+      const tools: Record<string, "select" | MarkType> = { v: "select", r: "rect", o: "oval", a: "arrow" };
+      if (tools[k]) {
+        e.preventDefault();
+        this.setTool(tools[k]);
+        return;
+      }
+    }
     if (e.key === "Delete" || e.key === "Backspace") {
-      if (this.selectedStamp) {
+      if (this.selectedMark) {
+        e.preventDefault();
+        this.deleteMark(this.selectedMark);
+      } else if (this.selectedStamp) {
         e.preventDefault();
         this.deleteStamp(this.selectedStamp);
       } else if (document.activeElement === this.sidebar && this.active?.selection.size) {
         e.preventDefault();
         this.deleteSelected();
       }
+    }
+  }
+
+  // ================================================================ markup
+
+  private loadMarkupPrefs() {
+    try {
+      const p = JSON.parse(localStorage.getItem(MARKUP_KEY) ?? "{}");
+      if (MARK_COLORS.includes(p.color)) this.markColor = p.color;
+      if (MARK_WIDTHS.includes(p.width)) this.markWidth = p.width;
+    } catch {
+      /* defaults */
+    }
+  }
+
+  private saveMarkupPrefs() {
+    try {
+      localStorage.setItem(MARKUP_KEY, JSON.stringify({ color: this.markColor, width: this.markWidth }));
+    } catch {
+      /* storage unavailable */
+    }
+  }
+
+  private buildMarkupBar() {
+    this.loadMarkupPrefs();
+    const tool = (t: "select" | MarkType, label: string, iconName: string, key: string) =>
+      h("button", { class: "tool", title: `${label} (${key})`, "aria-label": label, dataset: { tool: t }, onclick: () => this.setTool(t) }, icon(iconName));
+    const swatches = MARK_COLORS.map((c) =>
+      h("button", {
+        class: "swatch",
+        title: "Colour",
+        "aria-label": `Colour ${c}`,
+        dataset: { color: c },
+        style: { background: c },
+        onclick: () => this.setMarkStyle({ color: c }),
+      }),
+    );
+    const widths = MARK_WIDTHS.map((w, i) =>
+      h("button", {
+        class: "tool width",
+        title: ["Thin", "Medium", "Thick"][i] + " lines",
+        "aria-label": ["Thin", "Medium", "Thick"][i] + " lines",
+        dataset: { width: String(w) },
+        onclick: () => this.setMarkStyle({ width: w }),
+      }, h("span", { class: "width-sample", style: { height: `${Math.round(w * 1.2 + 0.5)}px` } })),
+    );
+    this.markupBar.append(
+      tool("select", "Select and move", "pointer", "V"),
+      tool("rect", "Rectangle", "rect", "R"),
+      tool("oval", "Oval", "oval", "O"),
+      tool("arrow", "Arrow", "arrow", "A"),
+      h("div", { class: "sep" }),
+      h("div", { class: "swatches" }, ...swatches),
+      h("div", { class: "sep" }),
+      ...widths,
+      h("div", { class: "spacer" }),
+      h("span", { class: "markup-hint" }),
+      h("button", { class: "tool with-text", title: `Copy the image with its markup (${MOD}C)`, onclick: () => void this.copyImage() }, icon("copy"), h("span", {}, "Copy")),
+    );
+  }
+
+  private renderMarkupBar() {
+    const d = this.active;
+    const sel = this.selectedMarkObj();
+    const color = sel?.color ?? this.markColor;
+    const width = sel?.width ?? this.markWidth;
+    for (const b of this.markupBar.querySelectorAll<HTMLElement>("[data-tool]")) b.classList.toggle("active", b.dataset.tool === this.tool);
+    for (const b of this.markupBar.querySelectorAll<HTMLElement>("[data-color]")) b.classList.toggle("active", b.dataset.color === color);
+    for (const b of this.markupBar.querySelectorAll<HTMLElement>("[data-width]")) b.classList.toggle("active", Number(b.dataset.width) === width);
+    const hint = this.markupBar.querySelector(".markup-hint");
+    if (hint) {
+      hint.textContent = !d || d.kind !== "pages" ? "" : this.tool !== "select"
+        ? `Drag on the ${d.imageFormat ? "image" : "page"} to draw. Shift for squares, circles and 45° arrows. Esc to stop.`
+        : sel ? "Drag to move, drag a handle to resize. Delete to remove." : "";
+    }
+    this.root.classList.toggle("drawing", !!d?.markup && this.tool !== "select");
+  }
+
+  toggleMarkup() {
+    const d = this.active;
+    if (d?.kind !== "pages") return;
+    d.markup = !d.markup;
+    if (!d.markup) {
+      this.tool = "select";
+      this.selectMark(null);
+    }
+    this.render();
+  }
+
+  setTool(t: "select" | MarkType) {
+    const d = this.active;
+    if (d?.kind !== "pages") return;
+    if (!d.markup) {
+      d.markup = true;
+      this.render();
+    }
+    this.tool = t;
+    if (t !== "select") this.selectMark(null);
+    if (this.placing) this.stopPlacing();
+    this.renderMarkupBar();
+  }
+
+  private selectedMarkObj(): Mark | null {
+    if (!this.selectedMark || !this.active) return null;
+    for (const p of this.active.pages) {
+      const m = p.marks.find((x) => x.id === this.selectedMark);
+      if (m) return m;
+    }
+    return null;
+  }
+
+  private pageOfMark(id: string): PageRef | undefined {
+    return this.active?.pages.find((p) => p.marks.some((m) => m.id === id));
+  }
+
+  private selectMark(id: string | null) {
+    const prev = this.selectedMark ? this.pageOfMark(this.selectedMark) : undefined;
+    this.selectedMark = id;
+    if (id && this.selectedStamp) {
+      const sp = this.active?.pages.find((p) => p.stamps.some((s) => s.id === this.selectedStamp));
+      this.selectedStamp = null;
+      if (sp) this.renderStampsFor(sp.id);
+    }
+    if (prev) this.renderMarksFor(prev.id);
+    const next = id ? this.pageOfMark(id) : undefined;
+    if (next && next !== prev) this.renderMarksFor(next.id);
+    this.renderMarkupBar();
+  }
+
+  /** New colour or line width: applies to the selected shape and to the next ones. */
+  private setMarkStyle(style: { color?: string; width?: number }) {
+    if (style.color) this.markColor = style.color;
+    if (style.width) this.markWidth = style.width;
+    this.saveMarkupPrefs();
+    const d = this.active;
+    const sel = this.selectedMarkObj();
+    if (d && sel) {
+      this.commit(d, d.pages.map((p) => ({ ...p, marks: p.marks.map((m) => (m.id === sel.id ? { ...m, ...style } : m)) })));
+    }
+    this.renderMarkupBar();
+  }
+
+  private deleteMark(id: string) {
+    const d = this.active;
+    if (!d) return;
+    this.selectedMark = null;
+    this.commit(d, d.pages.map((p) => (p.marks.some((m) => m.id === id) ? { ...p, marks: p.marks.filter((m) => m.id !== id) } : p)));
+  }
+
+  /** Draw the page's shapes (plus an in-progress one) as SVG over the page, and update its thumbnail. */
+  private renderMarksFor(pageId: string, preview?: Mark) {
+    const d = this.active;
+    const pe = this.pageEls.get(pageId);
+    const ref = d?.pages.find((p) => p.id === pageId);
+    if (!d || !ref) return;
+    if (pe) pe.marks.replaceChildren(...this.markNodes(ref, this.scale, true, preview));
+    if (!preview) this.renderThumbMarks(ref);
+  }
+
+  private renderThumbMarks(ref: PageRef) {
+    const t = this.thumbEls.get(ref.id);
+    if (!t) return;
+    let svg = t.el.querySelector<SVGSVGElement>("svg.marks");
+    if (!ref.marks.length) return svg?.replaceChildren();
+    if (!svg) {
+      svg = document.createElementNS(SVG_NS, "svg") as SVGSVGElement;
+      svg.classList.add("marks");
+      t.el.querySelector(".thumb-frame")!.append(svg);
+    }
+    const size = displaySize(this.sources, ref);
+    svg.replaceChildren(...this.markNodes(ref, Math.min(THUMB_W / size.width, THUMB_H / size.height), false));
+  }
+
+  /** SVG elements for a page's shapes at a given scale. `interactive` adds hit areas and handles. */
+  private markNodes(ref: PageRef, scale: number, interactive: boolean, preview?: Mark): Element[] {
+    const vp = viewportFor(this.sources, ref, scale);
+    const P = (x: number, y: number) => vp.convertToViewportPoint(x, y) as [number, number];
+    const el = (tag: string, attrs: Record<string, string | number>) => {
+      const n = document.createElementNS(SVG_NS, tag);
+      for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, String(v));
+      return n;
+    };
+    let marks = ref.marks;
+    if (preview) marks = marks.some((m) => m.id === preview.id) ? marks.map((m) => (m.id === preview.id ? preview : m)) : [...marks, preview];
+    const nodes: Element[] = [];
+    for (const m of marks) {
+      const g = el("g", interactive ? { "data-mark": m.id, class: m.id === this.selectedMark ? "mark selected" : "mark" } : {});
+      const sw = m.width * scale;
+      const paint = { stroke: m.color, "stroke-width": sw, fill: "none", "stroke-linecap": "round", "stroke-linejoin": "round" };
+      const hit: Record<string, string | number> = interactive
+        ? { class: "mark-hit", stroke: "transparent", fill: "none", "stroke-width": Math.max(14, sw + 10) }
+        : { display: "none" };
+      const [ax, ay] = P(m.x1, m.y1), [bx, by] = P(m.x2, m.y2);
+      const x = Math.min(ax, bx), y = Math.min(ay, by), w = Math.abs(bx - ax), hgt = Math.abs(by - ay);
+      let handles: [number, number][] = [];
+      if (m.type === "rect") {
+        g.append(el("rect", { x, y, width: w, height: hgt, ...paint }), el("rect", { x, y, width: w, height: hgt, ...hit }));
+        handles = [[x, y], [x + w, y], [x + w, y + hgt], [x, y + hgt]];
+      } else if (m.type === "oval") {
+        const e = { cx: x + w / 2, cy: y + hgt / 2, rx: w / 2, ry: hgt / 2 };
+        g.append(el("ellipse", { ...e, ...paint }), el("ellipse", { ...e, ...hit }));
+        handles = [[x, y], [x + w, y], [x + w, y + hgt], [x, y + hgt]];
+      } else {
+        const geo = arrowGeometry(m);
+        if (geo) {
+          const [s0, s1] = geo.shaft.map(([px, py]) => P(px, py));
+          const head = geo.head.map(([px, py]) => P(px, py).join(",")).join(" ");
+          g.append(
+            el("line", { x1: s0[0], y1: s0[1], x2: s1[0], y2: s1[1], ...paint }),
+            el("polygon", { points: head, fill: m.color, stroke: m.color, "stroke-width": Math.min(sw, 2 * scale), "stroke-linejoin": "round" }),
+            el("line", { x1: ax, y1: ay, x2: bx, y2: by, ...hit }),
+          );
+        }
+        handles = [[ax, ay], [bx, by]];
+      }
+      if (interactive && m.id === this.selectedMark && !preview) {
+        handles.forEach(([hx, hy], i) => g.append(el("rect", { class: "mark-handle", "data-handle": i, x: hx - 5, y: hy - 5, width: 10, height: 10, rx: 2 })));
+      }
+      nodes.push(g);
+    }
+    return nodes;
+  }
+
+  private pointIn(e: PointerEvent, pageId: string): [number, number] {
+    const r = this.pageEls.get(pageId)!.el.getBoundingClientRect();
+    return [e.clientX - r.left, e.clientY - r.top];
+  }
+
+  /** Mark from two display points (CSS px on the page). */
+  private markFromDisplay(ref: PageRef, base: Omit<Mark, "x1" | "y1" | "x2" | "y2">, a: [number, number], b: [number, number]): Mark {
+    const vp = viewportFor(this.sources, ref, this.scale);
+    const [x1, y1] = vp.convertToPdfPoint(...a);
+    const [x2, y2] = vp.convertToPdfPoint(...b);
+    return { ...base, x1, y1, x2, y2 };
+  }
+
+  /** Shift-constrain: squares and circles, or arrows at 45° steps. */
+  private constrain(type: MarkType, a: [number, number], b: [number, number]): [number, number] {
+    const dx = b[0] - a[0], dy = b[1] - a[1];
+    if (type === "arrow") {
+      const ang = Math.round(Math.atan2(dy, dx) / (Math.PI / 4)) * (Math.PI / 4);
+      const len = Math.hypot(dx, dy);
+      return [a[0] + Math.cos(ang) * len, a[1] + Math.sin(ang) * len];
+    }
+    const side = Math.max(Math.abs(dx), Math.abs(dy));
+    return [a[0] + Math.sign(dx || 1) * side, a[1] + Math.sign(dy || 1) * side];
+  }
+
+  private drawMark(e: PointerEvent, ref: PageRef) {
+    const d = this.active!;
+    const type = this.tool as MarkType;
+    const pageEl = this.pageEls.get(ref.id)!.el;
+    const start = this.pointIn(e, ref.id);
+    const base = { id: uid("m"), type, color: this.markColor, width: this.markWidth };
+    let end = start;
+    pageEl.setPointerCapture(e.pointerId);
+    const move = (ev: PointerEvent) => {
+      const p = this.pointIn(ev, ref.id);
+      end = ev.shiftKey ? this.constrain(type, start, p) : p;
+      this.renderMarksFor(ref.id, this.markFromDisplay(ref, base, start, end));
+    };
+    const up = () => {
+      pageEl.removeEventListener("pointermove", move);
+      pageEl.removeEventListener("pointerup", up);
+      pageEl.removeEventListener("pointercancel", up);
+      if (Math.hypot(end[0] - start[0], end[1] - start[1]) < 4) {
+        this.renderMarksFor(ref.id);
+        return;
+      }
+      const mark = this.markFromDisplay(ref, base, start, end);
+      this.commit(d, d.pages.map((p) => (p.id === ref.id ? { ...p, marks: [...p.marks, mark] } : p)));
+      this.selectMark(mark.id);
+    };
+    pageEl.addEventListener("pointermove", move);
+    pageEl.addEventListener("pointerup", up);
+    pageEl.addEventListener("pointercancel", up);
+  }
+
+  /** Select a shape and move it, or drag one of its handles to reshape it. */
+  private dragMark(e: PointerEvent, ref: PageRef, markId: string, handle: number | null) {
+    const d = this.active!;
+    const orig = ref.marks.find((m) => m.id === markId);
+    if (!orig) return;
+    if (this.selectedMark !== markId) this.selectMark(markId);
+    const pageEl = this.pageEls.get(ref.id)!.el;
+    const vp = viewportFor(this.sources, ref, this.scale);
+    const a = vp.convertToViewportPoint(orig.x1, orig.y1) as [number, number];
+    const b = vp.convertToViewportPoint(orig.x2, orig.y2) as [number, number];
+    const start = this.pointIn(e, ref.id);
+    let current = orig;
+    let moved = false;
+    pageEl.setPointerCapture(e.pointerId);
+    const move = (ev: PointerEvent) => {
+      let p = this.pointIn(ev, ref.id);
+      const dx = p[0] - start[0], dy = p[1] - start[1];
+      if (!moved && Math.hypot(dx, dy) < 3) return;
+      moved = true;
+      if (handle === null) {
+        current = this.markFromDisplay(ref, orig, [a[0] + dx, a[1] + dy], [b[0] + dx, b[1] + dy]);
+      } else if (orig.type === "arrow") {
+        const fixed = handle === 0 ? b : a;
+        if (ev.shiftKey) p = this.constrain("arrow", fixed, p);
+        current = handle === 0 ? this.markFromDisplay(ref, orig, p, b) : this.markFromDisplay(ref, orig, a, p);
+      } else {
+        // Corners in display order: top-left, top-right, bottom-right, bottom-left. Keep the opposite one fixed.
+        const x0 = Math.min(a[0], b[0]), x1 = Math.max(a[0], b[0]), y0 = Math.min(a[1], b[1]), y1 = Math.max(a[1], b[1]);
+        const corners: [number, number][] = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
+        const fixed = corners[(handle + 2) % 4];
+        if (ev.shiftKey) p = this.constrain(orig.type, fixed, p);
+        current = this.markFromDisplay(ref, orig, fixed, p);
+      }
+      this.renderMarksFor(ref.id, current);
+    };
+    const up = () => {
+      pageEl.removeEventListener("pointermove", move);
+      pageEl.removeEventListener("pointerup", up);
+      pageEl.removeEventListener("pointercancel", up);
+      if (!moved) return;
+      this.commit(d, d.pages.map((p) => (p.id === ref.id ? { ...p, marks: p.marks.map((m) => (m.id === markId ? current : m)) } : p)));
+      this.renderMarksFor(ref.id);
+    };
+    pageEl.addEventListener("pointermove", move);
+    pageEl.addEventListener("pointerup", up);
+    pageEl.addEventListener("pointercancel", up);
+  }
+
+  // ================================================================ copy to clipboard
+
+  /** Copy the current page (or the one selected page) as an image, markup and signatures included. */
+  async copyImage() {
+    const d = this.active;
+    if (d?.kind !== "pages") return;
+    const id = d.selection.size === 1 ? [...d.selection][0] : this.currentPageId ?? d.pages[0]?.id;
+    const ref = d.pages.find((p) => p.id === id);
+    if (!ref) return;
+    try {
+      const canvas = await flattenPage(this.sources, ref, this.images, false);
+      await this.platform.writeClipboardImage(canvas);
+      canvas.width = canvas.height = 0;
+      d.copied = snapshot(d.pages);
+      toast(d.pages.length > 1 ? `Copied page ${d.pages.indexOf(ref) + 1} as an image` : "Copied to the clipboard");
+    } catch (e: any) {
+      toast(`Couldn't copy: ${e?.message ?? e}`, "error");
     }
   }
 
