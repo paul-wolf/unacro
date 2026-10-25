@@ -1,6 +1,6 @@
 //! Unacro's native side is deliberately tiny: read a file, write a file safely,
-//! and pass on PDFs the operating system asks it to open. Everything else
-//! happens in the web UI.
+//! pass on files the operating system asks it to open, and print HTML to PDF
+//! (for Markdown, see print.rs). Everything else happens in the web UI.
 
 use std::fs;
 use std::io::Write;
@@ -9,6 +9,8 @@ use std::sync::Mutex;
 
 use tauri::ipc::{InvokeBody, Request, Response};
 use tauri::{AppHandle, Emitter, Manager, State};
+
+mod print;
 
 /// Read a whole file and return its bytes without JSON encoding.
 #[tauri::command]
@@ -145,6 +147,20 @@ fn data_delete(app: AppHandle, name: String) -> Result<(), String> {
     }
 }
 
+/// A short fingerprint of a file's size and modification time, to notice when it
+/// changes on disk (an open Markdown file being edited). Null if it can't be read.
+#[tauri::command]
+fn file_stamp(path: String) -> Option<String> {
+    let meta = fs::metadata(&path).ok()?;
+    let modified = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    Some(format!("{}-{modified}", meta.len()))
+}
+
 /// Which of these files still exist (to grey out moved or deleted files).
 #[tauri::command]
 fn paths_exist(paths: Vec<String>) -> Vec<bool> {
@@ -243,6 +259,8 @@ pub fn run() {
 
     builder
         .manage(Mutex::new(OpenQueue::default()))
+        .manage(print::PrintJobs::default())
+        .register_uri_scheme_protocol(print::SCHEME, print::serve)
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_opener::init())
@@ -253,7 +271,9 @@ pub fn run() {
             data_read,
             data_write,
             data_delete,
-            paths_exist
+            paths_exist,
+            file_stamp,
+            print::html_to_pdf
         ])
         .build(tauri::generate_context!())
         .expect("error while building Unacro")

@@ -39,7 +39,7 @@ export function showSwitcher(items: SwitcherItem[], choose: (item: SwitcherItem)
         h(
           "div",
           { class: `sw-item${i === sel ? " selected" : ""}`, role: "option", "aria-selected": String(i === sel), onmousedown: (e: MouseEvent) => (e.preventDefault(), pick(i)) },
-          icon(it.kind === "pdf" ? "doc" : it.kind === "model" ? "cube" : "image"),
+          icon(it.kind === "pdf" ? "doc" : it.kind === "model" ? "cube" : it.kind === "markdown" ? "md" : "image"),
           h("span", { class: "sw-name" }, it.name),
           h("span", { class: "sw-dir" }, h("bdi", {}, it.dir || "not saved yet")),
           h("span", { class: "sw-meta" }, it.docId ? "open" : relativeTime(it.last, now)),

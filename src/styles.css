@@ -388,6 +388,13 @@ button { font: inherit; color: inherit; }
 #app.model-doc .workspace { grid-template-columns: 1fr; }
 #app.model-doc .sidebar, #app.model-doc .viewer { display: none; }
 #app.model-doc .model-view { display: block; }
+
+/* Markdown documents (their content is styled inside a shadow root; see mdview.ts) */
+.md-view { display: none; position: relative; min-height: 0; background: var(--viewer); }
+#app.md-doc .workspace { grid-template-columns: 1fr; }
+#app.md-doc .sidebar, #app.md-doc .viewer { display: none; }
+#app.md-doc .md-view { display: block; }
+.statusbar .warn { color: var(--danger); }
 .model-canvas { display: block; width: 100%; height: 100%; touch-action: none; cursor: grab; }
 .model-canvas:active { cursor: grabbing; }
 .model-error { padding: 24px; color: var(--muted); text-align: center; }

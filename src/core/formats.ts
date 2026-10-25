@@ -1,7 +1,7 @@
 // File types Unacro understands, and small format helpers that don't need a DOM.
 
 export type ImageFormat = "jpeg" | "png" | "gif" | "bmp" | "tiff" | "heic";
-export type FileKind = "pdf" | "image" | "model";
+export type FileKind = "pdf" | "image" | "model" | "markdown";
 
 export interface Detected {
   kind: FileKind;
@@ -29,7 +29,8 @@ const IMAGE_EXTS: Record<string, ImageFormat> = {
 export const PDF_EXTS = ["pdf"];
 export const IMAGE_OPEN_EXTS = Object.keys(IMAGE_EXTS);
 export const MODEL_EXTS = ["stl"];
-export const ALL_EXTS = [...PDF_EXTS, ...IMAGE_OPEN_EXTS, ...MODEL_EXTS];
+export const MARKDOWN_EXTS = ["md", "markdown", "mdown", "mkd", "mkdn"];
+export const ALL_EXTS = [...PDF_EXTS, ...IMAGE_OPEN_EXTS, ...MODEL_EXTS, ...MARKDOWN_EXTS];
 
 /** Image formats Unacro can write. GIF and HEIC can be opened but not saved. */
 export const WRITABLE_IMAGE_FORMATS: ImageFormat[] = ["jpeg", "png", "tiff", "bmp"];
@@ -95,8 +96,11 @@ export function detect(name: string, bytes: Uint8Array): Detected | null {
   if (ascii(bytes, 4, 4) === "ftyp" && /^(heic|heix|hevc|hevx|heim|heis|mif1|msf1)$/.test(ascii(bytes, 8, 4))) {
     return { kind: "image", format: "heic" };
   }
-  if (ascii(bytes, 0, 1024).includes("%PDF-")) return { kind: "pdf" };
   const ext = extOf(name);
+  // Markdown is plain text, so only the name says what it is. Checked before the
+  // "%PDF-" scan, which a note about PDFs could otherwise trip.
+  if (MARKDOWN_EXTS.includes(ext)) return { kind: "markdown" };
+  if (ascii(bytes, 0, 1024).includes("%PDF-")) return { kind: "pdf" };
   if (ext === "stl") return { kind: "model" };
   if (ext === "pdf") return { kind: "pdf" };
   const fmt = IMAGE_EXTS[ext];

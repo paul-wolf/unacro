@@ -21,15 +21,15 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; img-src 'self' blob: data:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost"
+      "csp": "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; img-src 'self' blob: data: https: http:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost"
     }
   },
   "bundle": {
     "active": true,
     "targets": "all",
     "category": "Productivity",
-    "shortDescription": "View PDFs, images and 3D models; combine, organize and sign",
-    "longDescription": "Unacro is a small, fast, open-source viewer for PDFs, screenshots, images and STL models. Combine documents, reorder and rotate pages, add your signature, convert images, and export PDFs to Markdown.",
+    "shortDescription": "View PDFs, images, Markdown and 3D models; combine, organize and sign",
+    "longDescription": "Unacro is a small, fast, open-source viewer for PDFs, screenshots, images, Markdown documents and STL models. Combine documents, reorder and rotate pages, add your signature, convert images, turn Markdown into PDF, and export PDFs to Markdown.",
     "copyright": "MIT License",
     "icon": [
       "icons/32x32.png",
@@ -129,6 +129,22 @@
         ],
         "name": "BMP image",
         "role": "Editor",
+        "rank": "Alternate"
+      },
+      {
+        "ext": [
+          "md",
+          "markdown",
+          "mdown",
+          "mkd",
+          "mkdn"
+        ],
+        "mimeType": "text/markdown",
+        "contentTypes": [
+          "net.daringfireball.markdown"
+        ],
+        "name": "Markdown document",
+        "role": "Viewer",
         "rank": "Alternate"
       },
       {

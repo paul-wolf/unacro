@@ -2,7 +2,7 @@
 // can be unit-tested: recording, pruning, grouping for the Library views, and the
 // fuzzy matching behind the quick switcher.
 
-export type HistoryKind = "pdf" | "image" | "model";
+export type HistoryKind = "pdf" | "image" | "model" | "markdown";
 
 export interface HistoryEntry {
   path: string;
@@ -138,6 +138,7 @@ export function groupByType(entries: HistoryEntry[]): Group[] {
     ["pdf", "PDFs", (e) => e.kind === "pdf"],
     ["screenshot", "Screenshots", isScreenshot],
     ["image", "Images", (e) => e.kind === "image" && !isScreenshot(e)],
+    ["markdown", "Markdown", (e) => e.kind === "markdown"],
     ["model", "3D models", (e) => e.kind === "model"],
   ];
   const sorted = [...entries].sort(byLast);

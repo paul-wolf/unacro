@@ -1,0 +1,147 @@
+/* How a Markdown document looks, both in its tab and in the PDF made from it.
+   Everything is scoped to .md so the same rules work inside the tab's shadow root
+   and on the page that gets printed to PDF. Colours are fixed (paper is white). */
+
+.md {
+  --md-text: #1f2328;
+  --md-muted: #59636e;
+  --md-line: #d1d9e0;
+  --md-soft: #f6f8fa;
+  --md-link: #0b6bcb;
+  --md-accent: #0f766e;
+  color: var(--md-text);
+  background: #fff;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Ubuntu, Cantarell, Helvetica, Arial, sans-serif;
+  font-size: 14.5px;
+  line-height: 1.55;
+  overflow-wrap: break-word;
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
+}
+
+.md > :first-child { margin-top: 0 !important; }
+.md > :last-child { margin-bottom: 0 !important; }
+
+.md p, .md ul, .md ol, .md dl, .md blockquote, .md pre, .md table, .md details, .md figure, .md hr {
+  margin: 0 0 0.9em;
+}
+
+.md h1, .md h2, .md h3, .md h4, .md h5, .md h6 {
+  margin: 1.5em 0 0.55em;
+  font-weight: 650;
+  line-height: 1.25;
+  break-after: avoid;
+  page-break-after: avoid;
+}
+.md h1 { font-size: 2em; padding-bottom: 0.25em; border-bottom: 1px solid var(--md-line); }
+.md h2 { font-size: 1.5em; padding-bottom: 0.2em; border-bottom: 1px solid var(--md-line); }
+.md h3 { font-size: 1.25em; }
+.md h4 { font-size: 1.05em; }
+.md h5 { font-size: 0.95em; }
+.md h6 { font-size: 0.9em; color: var(--md-muted); }
+
+.md a { color: var(--md-link); text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 2px; }
+.md strong, .md b { font-weight: 650; }
+.md mark { background: #fff3a3; color: inherit; padding: 0 0.1em; }
+.md del, .md s { color: var(--md-muted); }
+.md sup, .md sub { line-height: 0; }
+.md hr { height: 0; border: 0; border-top: 1px solid var(--md-line); margin: 1.6em 0; }
+
+.md ul, .md ol { padding-left: 1.7em; }
+.md li + li { margin-top: 0.25em; }
+.md li > ul, .md li > ol { margin: 0.25em 0 0; }
+.md li > p { margin: 0 0 0.4em; }
+.md li.task-list-item { list-style: none; }
+.md li.task-list-item > input[type="checkbox"] { margin: 0 0.45em 0.2em -1.4em; vertical-align: middle; accent-color: var(--md-accent); }
+
+.md dt { font-weight: 650; margin-top: 0.6em; }
+.md dd { margin: 0 0 0.4em 1.5em; }
+
+.md blockquote {
+  padding: 0 1em;
+  color: var(--md-muted);
+  border-left: 0.25em solid var(--md-line);
+}
+
+.md code, .md kbd, .md samp, .md pre {
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "DejaVu Sans Mono", "Liberation Mono", monospace;
+  font-size: 0.86em;
+}
+.md :not(pre) > code {
+  padding: 0.12em 0.35em;
+  background: rgba(129, 139, 152, 0.14);
+  border-radius: 5px;
+}
+.md kbd {
+  padding: 0.1em 0.4em;
+  border: 1px solid var(--md-line);
+  border-bottom-width: 2px;
+  border-radius: 5px;
+  background: var(--md-soft);
+}
+.md pre {
+  padding: 0.85em 1em;
+  overflow: auto;
+  line-height: 1.45;
+  background: var(--md-soft);
+  border: 1px solid #e4e8ec;
+  border-radius: 7px;
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
+.md pre code { padding: 0; background: none; font-size: inherit; white-space: pre; }
+
+.md table {
+  border-collapse: collapse;
+  border-spacing: 0;
+  display: table;
+  max-width: 100%;
+  font-variant-numeric: tabular-nums;
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
+.md th, .md td { padding: 0.35em 0.75em; border: 1px solid var(--md-line); vertical-align: top; }
+.md th { font-weight: 650; background: var(--md-soft); }
+.md tr:nth-child(2n) td { background: #fbfcfd; }
+
+.md img { max-width: 100%; height: auto; box-sizing: border-box; break-inside: avoid; page-break-inside: avoid; }
+.md figure { margin-left: 0; margin-right: 0; }
+.md figcaption { color: var(--md-muted); font-size: 0.9em; margin-top: 0.3em; }
+.md details > summary { cursor: pointer; font-weight: 600; }
+
+/* Images that couldn't be shown: missing files, and web images not loaded. */
+.md .md-ph {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5em;
+  max-width: 100%;
+  box-sizing: border-box;
+  padding: 0.5em 0.8em;
+  margin: 0.15em 0;
+  border: 1px dashed #b8c0c8;
+  border-radius: 6px;
+  background: var(--md-soft);
+  color: var(--md-muted);
+  font-size: 0.85em;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  vertical-align: middle;
+}
+.md .md-ph b { color: var(--md-text); font-weight: 600; white-space: nowrap; }
+.md .md-ph.missing { border-color: #e3a29b; background: #fdf3f2; }
+
+/* Syntax highlighting (after highlight.js "GitHub"). */
+.md .hljs-doctag, .md .hljs-keyword, .md .hljs-meta .hljs-keyword, .md .hljs-template-tag, .md .hljs-template-variable, .md .hljs-type, .md .hljs-variable.language_ { color: #cf222e; }
+.md .hljs-title, .md .hljs-title.class_, .md .hljs-title.class_.inherited__, .md .hljs-title.function_ { color: #8250df; }
+.md .hljs-attr, .md .hljs-attribute, .md .hljs-literal, .md .hljs-meta, .md .hljs-number, .md .hljs-operator, .md .hljs-variable, .md .hljs-selector-attr, .md .hljs-selector-class, .md .hljs-selector-id { color: #0550ae; }
+.md .hljs-regexp, .md .hljs-string, .md .hljs-meta .hljs-string { color: #0a3069; }
+.md .hljs-built_in, .md .hljs-symbol { color: #953800; }
+.md .hljs-comment, .md .hljs-code, .md .hljs-formula { color: #6e7781; }
+.md .hljs-name, .md .hljs-quote, .md .hljs-selector-tag, .md .hljs-selector-pseudo { color: #116329; }
+.md .hljs-subst { color: #24292f; }
+.md .hljs-section { color: #0550ae; font-weight: bold; }
+.md .hljs-bullet { color: #953800; }
+.md .hljs-emphasis { font-style: italic; }
+.md .hljs-strong { font-weight: bold; }
+.md .hljs-addition { color: #116329; background-color: #dafbe1; }
+.md .hljs-deletion { color: #82071e; background-color: #ffebe9; }

@@ -115,7 +115,7 @@ export class LibraryView {
             h("button", { class: "btn primary", onclick: () => this.deps.openDialog() }, "Open…"),
             h("button", { class: "btn plain", onclick: () => this.deps.newFromClipboard() }, "New from Clipboard"),
           ),
-          h("p", { class: "muted" }, "You can also drop PDFs, images or STL models anywhere in the window."),
+          h("p", { class: "muted" }, "You can also drop PDFs, images, Markdown files or STL models anywhere in the window."),
         ),
       );
       return;
@@ -177,7 +177,7 @@ export class LibraryView {
   private row(e: HistoryEntry, now: number, inFolder: boolean) {
     const missing = !this.deps.history.exists(e.path);
     const open = this.deps.isOpen(e.path);
-    const thumb = h("div", { class: `lib-thumb kind-${e.kind}`, dataset: { path: e.path } }, icon(e.kind === "pdf" ? "doc" : e.kind === "model" ? "cube" : "image"));
+    const thumb = h("div", { class: `lib-thumb kind-${e.kind}`, dataset: { path: e.path } }, icon(e.kind === "pdf" ? "doc" : e.kind === "model" ? "cube" : e.kind === "markdown" ? "md" : "image"));
     const actions = h(
       "div",
       { class: "lib-actions" },

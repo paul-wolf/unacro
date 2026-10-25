@@ -28,13 +28,18 @@ import {
   IMAGE_LABEL,
   IMAGE_SAVE_EXT,
   WRITABLE_IMAGE_FORMATS,
+  ALL_EXTS,
   detect,
+  extOf,
   replaceExt,
   saveFormatOf,
   type ImageFormat,
 } from "./core/formats";
 import { encodeCanvas } from "./images";
 import { createModelViewer, parseStl, type LoadedModel, type ModelViewer, type ViewState } from "./model3d";
+import { MdDocument, mdCss, type ImageCounts } from "./mdview";
+import { PAGE_MARGIN, PAPER_SIZE, joinPath, paperForLocale, type Paper } from "./core/mdsource";
+import { PDFDocument } from "pdf-lib";
 import { HistoryStore, kindOfPath, loadSettings, saveSettings, type Settings } from "./history";
 import { LibraryView } from "./ui/library";
 import { showSwitcher, isSwitcherOpen, type SwitcherItem } from "./ui/switcher";
@@ -64,12 +69,18 @@ interface Doc {
   anchor: string | null;
   zoom: number | "fit";
   scrollTop: number;
-  /** "pages" for PDFs and images; "model" for a 3D model, which has no pages. */
-  kind: "pages" | "model";
+  /** "pages" for PDFs and images; "model" for a 3D model and "markdown" for a Markdown file, which have no pages. */
+  kind: "pages" | "model" | "markdown";
   /** Set when the document was opened from an image, so Save writes an image back. */
   imageFormat: ImageFormat | null;
   model: LoadedModel | null;
   view3d: ViewState | null;
+  /** A Markdown document, rendered. */
+  md: MdDocument | null;
+  /** The Markdown file's size and modification time when last read, to notice edits. */
+  mdStamp: string | null;
+  /** What happened to its images, once they've been looked at. */
+  mdImages: ImageCounts | null;
   /** Whether the markup bar is shown for this document. */
   markup: boolean;
   /** Snapshot of `pages` when the document was last copied to the clipboard. */
@@ -103,6 +114,9 @@ const PAGE_GAP = 16;
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 const MARKUP_KEY = "unacro.markup";
+const PAPER_KEY = "unacro.paper";
+/** CSS pixels per PDF point. */
+const PX_PER_PT = 96 / 72;
 const JPEG_QUALITY_KEY = "unacro.jpegQuality";
 
 const snapshot = (pages: PageRef[]) => JSON.stringify(pages);
@@ -152,6 +166,14 @@ export class App {
   private modelHost = h("section", { class: "model-view", "aria-label": "3D model" });
   private modelViewer: ModelViewer | null = null;
   private modelViewerLoading: Promise<ModelViewer | null> | null = null;
+  // Markdown documents are shown in a shadow root so their styles and the app's stay apart.
+  private mdHost = h("section", { class: "md-view", "aria-label": "Markdown document" });
+  private mdBar = h("div", { class: "bar", hidden: true });
+  private mdArticle = h("article", { class: "md" });
+  private mdPaper = h("div", { class: "paper" }, this.mdArticle);
+  private mdScroll = h("div", { class: "scroll", tabindex: "-1" }, this.mdPaper);
+  private mdShown: Doc | null = null;
+  private converting = false;
   private status = h("footer", { class: "statusbar" });
   private searchInput = h("input", { class: "search-input", type: "search", placeholder: "Find", "aria-label": "Find in document" });
   private searchInfo = h("span", { class: "search-info" });
@@ -193,6 +215,9 @@ export class App {
       rootMargin: "300px 0px",
     });
     new ResizeObserver(() => this.active?.zoom === "fit" && this.layoutViewer()).observe(this.viewer);
+    new ResizeObserver(() => this.active?.kind === "markdown" && this.active.zoom === "fit" && this.layoutMarkdown()).observe(this.mdHost);
+    // An open Markdown file follows its file on disk, so it can sit next to an editor.
+    window.setInterval(() => void this.checkMarkdownFile(), 1200);
     this.viewer.addEventListener("scroll", () => this.onViewerScroll(), { passive: true });
     this.viewer.addEventListener(
       "wheel",
@@ -283,7 +308,8 @@ export class App {
       if (e.target === this.tabs) void this.openDialog();
     });
 
-    const workspace = h("main", { class: "workspace" }, this.sidebar, this.viewer, this.modelHost, this.library.el);
+    const workspace = h("main", { class: "workspace" }, this.sidebar, this.viewer, this.modelHost, this.mdHost, this.library.el);
+    this.buildMarkdownView();
     this.buildMarkupBar();
     this.root.append(this.toolbar, this.tabs, this.markupBar, workspace, this.status);
   }
@@ -296,6 +322,9 @@ export class App {
       imageFormat: null,
       model: null,
       view3d: null,
+      md: null,
+      mdStamp: null,
+      mdImages: null,
       markup: !!extra.imageFormat,
       copied: null,
       nearPath: null,
@@ -326,7 +355,9 @@ export class App {
       if (kind.kind === "model") throw new Error(`“${file.name}” is a 3D model, so it can't be added as pages.`);
       const src = kind.kind === "image"
         ? await Source.loadImage(file.name, file.bytes, kind.format!)
-        : await Source.load(file.name, file.bytes);
+        : kind.kind === "markdown"
+          ? await Source.load(replaceExt(file.name, "pdf"), await this.markdownFileToPdf(file))
+          : await Source.load(file.name, file.bytes);
       this.sources.add(src);
       return src;
     } catch (e: any) {
@@ -341,6 +372,11 @@ export class App {
       const existing = f.path ? this.docs.find((d) => d.path === f.path) : undefined;
       if (existing) {
         last = existing;
+        continue;
+      }
+      if (detect(f.name, f.bytes)?.kind === "markdown") {
+        const doc = await this.openMarkdown(f);
+        if (doc) last = doc;
         continue;
       }
       if (detect(f.name, f.bytes)?.kind === "model") {
@@ -428,11 +464,24 @@ export class App {
     toast(`Combined ${files.length} file${files.length === 1 ? "" : "s"}. Save to choose where it goes.`);
   }
 
-  combineOpenTabs() {
-    const pageDocs = this.docs.filter((d) => d.kind === "pages");
-    if (pageDocs.length < 2) return;
-    const pages = pageDocs.flatMap((d) => clonePages(d.pages));
-    this.activate(this.newDoc("Combined.pdf", null, pages, false));
+  async combineOpenTabs() {
+    const docs = this.docs.filter((d) => d.kind !== "model");
+    if (docs.length < 2) return;
+    const pages: PageRef[] = [];
+    for (const d of docs) {
+      if (d.kind === "pages") {
+        pages.push(...clonePages(d.pages));
+        continue;
+      }
+      try {
+        const src = await Source.load(replaceExt(d.name, "pdf"), await this.markdownToPdf(d.md!, d.name));
+        this.sources.add(src);
+        pages.push(...pagesForSource(src.id, src.pageCount));
+      } catch (e: any) {
+        toast(`Couldn't add “${d.name}”: ${e?.message ?? e}`, "error");
+      }
+    }
+    if (pages.length) this.activate(this.newDoc("Combined.pdf", null, pages, false));
   }
 
   private activate(doc: Doc | null) {
@@ -446,9 +495,10 @@ export class App {
       this.lastDoc = this.active;
     }
     if (this.active && this.active !== doc) {
-      this.active.scrollTop = this.viewer.scrollTop;
+      this.active.scrollTop = this.active.kind === "markdown" ? this.mdScroll.scrollTop : this.viewer.scrollTop;
       if (this.active.kind === "model") this.active.view3d = this.modelViewer?.getView() ?? null;
       this.modelShown = null;
+      this.mdShown = null;
     }
     this.active = doc;
     this.selectedStamp = null;
@@ -458,7 +508,7 @@ export class App {
     this.placing = null;
     this.clearSearch(false);
     this.render(true);
-    if (doc) {
+    if (doc && doc.kind !== "markdown") {
       requestAnimationFrame(() => (this.viewer.scrollTop = doc.scrollTop));
     }
   }
@@ -484,6 +534,10 @@ export class App {
     }
     const i = this.docs.indexOf(doc);
     this.docs.splice(i, 1);
+    if (doc.md) {
+      if (this.mdShown === doc) this.mdShown = null;
+      doc.md.dispose();
+    }
     if (doc.model) {
       if (this.modelShown === doc) this.modelShown = null;
       const geometry = doc.model.geometry;
@@ -578,7 +632,11 @@ export class App {
 
   /** Save to the document's own file, or ask where if it has none. Returns false if cancelled or failed. */
   async save(doc = this.active): Promise<boolean> {
-    if (!doc || doc.kind === "model") return false;
+    if (doc?.kind === "markdown") {
+      toast("Unacro shows Markdown but doesn't change it. To make a PDF, use Convert → PDF.");
+      return false;
+    }
+    if (!doc || doc.kind !== "pages") return false;
     if (!doc.path || doc.path.startsWith("download:")) return this.saveAs(doc);
     const format = saveFormatOf(doc.path);
     if (format && format !== "pdf") {
@@ -608,7 +666,11 @@ export class App {
 
   /** Save to a new file; the document now lives there. */
   async saveAs(doc = this.active): Promise<boolean> {
-    if (!doc || doc.kind === "model") return false;
+    if (doc?.kind === "markdown") {
+      void this.exportMarkdownPdf(doc);
+      return false;
+    }
+    if (!doc || doc.kind !== "pages") return false;
     const path = await this.platform.pickSavePath(this.suggestedName(doc), this.saveKind(doc), doc.path ?? doc.nearPath);
     if (!path) return false;
     try {
@@ -632,7 +694,8 @@ export class App {
 
   /** Write the current state elsewhere; the open document keeps pointing at its file. */
   async saveCopy(doc = this.active, asPdf = false) {
-    if (!doc || doc.kind === "model") return;
+    if (doc?.kind === "markdown") return void this.exportMarkdownPdf(doc);
+    if (!doc || doc.kind !== "pages") return;
     const suggested = asPdf ? replaceExt(doc.name, "pdf") : this.suggestedName(doc);
     const dot = suggested.lastIndexOf(".");
     const name = asPdf ? suggested : `${suggested.slice(0, dot)} copy${suggested.slice(dot)}`;
@@ -941,6 +1004,11 @@ export class App {
       if (z === "fit") this.modelViewer?.resetView();
       return;
     }
+    if (d.kind === "markdown") {
+      d.zoom = z === "fit" ? "fit" : Math.min(4, Math.max(0.3, z));
+      this.layoutMarkdown();
+      return;
+    }
     // Keep the current page in place while zooming.
     const anchorId = this.currentPageId;
     const anchorEl = anchorId ? this.pageEls.get(anchorId)?.el : null;
@@ -953,6 +1021,7 @@ export class App {
   zoomBy(f: number) {
     if (!this.active) return;
     if (this.active.kind === "model") return this.modelViewer?.zoom(f);
+    if (this.active.kind === "markdown") return this.setZoom(this.mdScale * f);
     this.setZoom(this.scale * f);
   }
 
@@ -1011,14 +1080,16 @@ export class App {
     const d = this.active;
     this.root.classList.toggle("has-doc", !!d);
     this.root.classList.toggle("model-doc", d?.kind === "model");
+    this.root.classList.toggle("md-doc", d?.kind === "markdown");
     this.root.classList.toggle("markup-on", d?.kind === "pages" && d.markup);
     this.renderMarkupBar();
     this.renderTabs();
     this.renderToolbarState();
     this.renderStatus();
     this.renderTitle();
-    if (!d || d.kind === "model") {
-      if (d) void this.showModel(d);
+    if (!d || d.kind !== "pages") {
+      if (d?.kind === "model") void this.showModel(d);
+      if (d?.kind === "markdown") void this.showMarkdown(d);
       this.library.render();
       for (const pe of this.pageEls.values()) this.pageObserver.unobserve(pe.el);
       this.pageEls.clear();
@@ -1071,6 +1142,7 @@ export class App {
     const d = this.active;
     const pages = d?.kind === "pages";
     for (const k of ["save", "insert", "rotl", "rotr", "delete", "sign", "md", "markup", "convert"]) this.buttons[k].disabled = !pages;
+    if (d?.kind === "markdown") this.buttons.convert.disabled = this.converting;
     this.buttons.markup.classList.toggle("active", !!(pages && d?.markup));
     this.buttons.markup.setAttribute("aria-pressed", String(!!(pages && d?.markup)));
     for (const k of ["zoomin", "zoomout"]) this.buttons[k].disabled = !d;
@@ -1079,7 +1151,7 @@ export class App {
     this.buttons.delete.disabled = !d?.selection.size;
     this.searchInput.disabled = !pages;
     const zl = this.toolbar.querySelector(".zoom-value");
-    if (zl) zl.textContent = !d ? "–" : d.kind === "model" || d.zoom === "fit" ? "Fit" : `${Math.round(this.scale * 100)}%`;
+    if (zl) zl.textContent = !d ? "–" : d.kind === "model" || d.zoom === "fit" ? "Fit" : `${Math.round((d.kind === "markdown" ? this.mdScale : this.scale) * 100)}%`;
   }
 
   private renderTabs() {
@@ -1175,6 +1247,15 @@ export class App {
       parts.push(h("button", { class: "copy-path", title: "Copy path", "aria-label": "Copy path", onclick: () => this.copyPath(d.path!) }, icon("copy")));
     }
     parts.push(h("span", { class: "spacer" }));
+    if (d.kind === "markdown") {
+      const c = d.mdImages;
+      if (c?.missing) parts.push(h("span", { class: "warn" }, `${c.missing} missing image${c.missing === 1 ? "" : "s"}`));
+      if (c?.remote && !d.md?.remoteAllowed) parts.push(h("span", {}, `${c.remote} web image${c.remote === 1 ? "" : "s"} not loaded`));
+      if (c?.unsupported) parts.push(h("span", {}, `${c.unsupported} image${c.unsupported === 1 ? "" : "s"} not shown`));
+      parts.push(h("span", { class: "muted", title: "Unacro shows Markdown read-only and updates it when the file changes. Convert → PDF makes a PDF on this paper size." }, this.paperLabel()));
+      this.status.replaceChildren(...parts);
+      return;
+    }
     if (d.kind === "model" && d.model) {
       const { size, triangles } = d.model.info;
       const fmt = (n: number) => (n >= 100 ? n.toFixed(0) : n >= 10 ? n.toFixed(1) : n.toFixed(2));
@@ -1652,7 +1733,7 @@ export class App {
     const intoSidebar = this.active?.kind === "pages" && !!target?.closest(".sidebar");
     const at = intoSidebar ? this.sidebarIndexAt(y) : 0;
     const files = await getFiles();
-    if (!files.length) return toast("Unacro opens PDFs, images (JPEG, PNG, GIF, HEIC, TIFF, BMP) and STL models.", "error");
+    if (!files.length) return toast("Unacro opens PDFs, images (JPEG, PNG, GIF, HEIC, TIFF, BMP), Markdown files and STL models.", "error");
     if (intoSidebar && this.active) await this.insertFiles(this.active, files, at);
     else await this.openFiles(files);
   }
@@ -1678,13 +1759,14 @@ export class App {
       },
       { label: "Go to File…", shortcut: `${MOD}P`, action: () => this.quickSwitch() },
       { label: "Combine Files into New PDF…", action: () => void this.combineFromFiles() },
-      { label: "Combine All Open Tabs", disabled: this.docs.filter((x) => x.kind === "pages").length < 2, action: () => this.combineOpenTabs() },
+      { label: "Combine All Open Tabs", disabled: this.docs.filter((x) => x.kind !== "model").length < 2, action: () => void this.combineOpenTabs() },
       { separator: true, label: "" },
       { label: "Save", shortcut: `${MOD}S`, disabled: !pages, action: () => void this.save() },
       { label: "Save As…", shortcut: `${SHIFT}${MOD}S`, disabled: !pages, action: () => void this.saveAs() },
       { label: "Save a Copy…", disabled: !pages, action: () => void this.saveCopy() },
       ...(d?.imageFormat ? [{ label: "Export as PDF…", action: () => void this.saveCopy(d, true) }] : []),
-      { label: "Convert", disabled: !pages, submenu: this.convertMenuItems() },
+      ...(d?.kind === "markdown" ? [{ label: "Export as PDF…", disabled: this.converting, action: () => void this.exportMarkdownPdf(d) }] : []),
+      { label: "Convert", disabled: !pages && d?.kind !== "markdown", submenu: this.convertMenuItems() },
       { separator: true, label: "" },
       { label: "Export as Markdown…", disabled: !pages || !!d?.imageFormat, action: () => void this.exportMarkdown() },
       { separator: true, label: "" },
@@ -1917,6 +1999,268 @@ export class App {
     }
   }
 
+  // ================================================================ markdown documents
+
+  private buildMarkdownView() {
+    const shadow = this.mdHost.attachShadow({ mode: "open" });
+    const style = document.createElement("style");
+    style.textContent = `${mdCss}
+:host { display: block; }
+.scroll { position: absolute; inset: 0; overflow: auto; outline: none; background: var(--viewer); }
+.wrap { min-height: 100%; }
+.paper { box-sizing: border-box; margin: 24px auto 40px; background: #fff; box-shadow: var(--page-shadow); }
+.bar {
+  position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding: 9px 16px; background: var(--chrome); border-bottom: 1px solid var(--line);
+  color: var(--text); font: 13px/1.4 var(--font);
+}
+.bar[hidden] { display: none; }
+.bar span { flex: 1 1 280px; }
+.bar button {
+  font: inherit; padding: 4px 12px; border-radius: var(--radius); cursor: pointer;
+  border: 1px solid var(--line); background: var(--menu-bg); color: var(--text);
+}
+.bar button:hover { border-color: var(--accent); }
+`;
+    this.mdScroll.prepend(this.mdBar);
+    shadow.append(style, this.mdScroll);
+    this.mdArticle.addEventListener("click", (e) => this.onMarkdownClick(e));
+  }
+
+  /** Links in a Markdown document: web and mail links open in the default app, links to files open in Unacro. */
+  private onMarkdownClick(e: MouseEvent) {
+    const a = (e.target as Element).closest?.("a");
+    if (!a) return;
+    e.preventDefault(); // never navigate the app itself
+    const href = a.getAttribute("href")?.trim() ?? "";
+    if (!href) return;
+    if (href.startsWith("#")) {
+      const id = decodeURIComponent(href.slice(1));
+      const target = this.mdArticle.querySelector(`[id="${CSS.escape(id)}"], [name="${CSS.escape(id)}"]`);
+      target?.scrollIntoView({ block: "start" });
+      return;
+    }
+    if (/^(https?:|mailto:)/i.test(href)) {
+      void this.platform.openUrl(href).catch((err: any) => toast(`Couldn't open the link: ${err?.message ?? err}`, "error"));
+      return;
+    }
+    const d = this.active;
+    if (/^[a-z][a-z0-9+.-]*:/i.test(href) || !d?.path) return;
+    let rel = href.split(/[?#]/)[0];
+    try {
+      rel = decodeURIComponent(rel);
+    } catch {
+      /* keep as written */
+    }
+    const dir = d.path.slice(0, Math.max(d.path.lastIndexOf("/"), d.path.lastIndexOf("\\")));
+    const path = rel.startsWith("/") ? rel : joinPath(dir, rel);
+    if (ALL_EXTS.includes(extOf(path))) void this.openPath(path);
+    else if (this.platform.canReveal) void this.platform.reveal(path).catch(() => toast(`Couldn't find ${path}`, "error"));
+  }
+
+  private async openMarkdown(f: OpenedFile): Promise<Doc | null> {
+    try {
+      const text = new TextDecoder().decode(f.bytes);
+      const md = await MdDocument.create(this.readBytes, f.path, text);
+      const doc = this.newDoc(f.name, f.path, [], true, {
+        kind: "markdown",
+        md,
+        mdStamp: f.path ? await this.platform.fileStamp(f.path) : null,
+      });
+      if (f.path) this.history.record(f.path, "markdown", true);
+      return doc;
+    } catch (e: any) {
+      toast(`Couldn't open “${f.name}”: ${e?.message ?? e}`, "error");
+      return null;
+    }
+  }
+
+  private readBytes = async (path: string) => (await this.platform.readPath(path)).bytes;
+
+  /** Show a Markdown document in the view (again, if `force`), keeping its scroll position. */
+  private async showMarkdown(d: Doc, force = false) {
+    if (!d.md || (this.mdShown === d && !force)) return;
+    this.mdShown = d;
+    const keep = force ? this.mdScroll.scrollTop : d.scrollTop;
+    const frag = await d.md.view();
+    if (this.active !== d || this.mdShown !== d) return;
+    this.mdArticle.replaceChildren(frag);
+    this.layoutMarkdown();
+    this.mdScroll.scrollTop = keep;
+    d.mdImages = await d.md.counts();
+    if (this.active !== d) return;
+    this.renderMarkdownBar(d);
+    this.renderStatus();
+  }
+
+  private renderMarkdownBar(d: Doc) {
+    const remote = d.mdImages?.remote ?? 0;
+    this.mdBar.hidden = !remote || !!d.md?.remoteAllowed;
+    if (this.mdBar.hidden) return this.mdBar.replaceChildren();
+    this.mdBar.replaceChildren(
+      h(
+        "span",
+        {},
+        `This document has ${remote === 1 ? "an image" : `${remote} images`} from the web. ` +
+          "Unacro doesn't load them unless you ask, so nothing is sent anywhere until then.",
+      ),
+      h("button", { onclick: () => void this.loadRemoteImages(d) }, "Load Remote Images"),
+    );
+  }
+
+  private async loadRemoteImages(d: Doc) {
+    if (!d.md) return;
+    d.md.remoteAllowed = true;
+    if (this.active === d) await this.showMarkdown(d, true);
+  }
+
+  private mdScale = 1;
+
+  private layoutMarkdown() {
+    const d = this.active;
+    if (d?.kind !== "markdown") return;
+    const { width } = PAPER_SIZE[this.paper()];
+    const paperW = width * PX_PER_PT;
+    const pad = PAGE_MARGIN * PX_PER_PT;
+    const avail = this.mdHost.clientWidth - 48;
+    this.mdScale = d.zoom === "fit" ? Math.max(0.3, Math.min(1.25, avail / paperW)) : d.zoom;
+    this.mdPaper.style.width = `${paperW}px`;
+    this.mdPaper.style.padding = `${pad}px`;
+    (this.mdPaper.style as any).zoom = String(this.mdScale);
+    this.renderToolbarState();
+  }
+
+  /** Reload the active Markdown document if its file changed on disk. */
+  private checkingMd = false;
+  private async checkMarkdownFile() {
+    const d = this.active;
+    if (d?.kind !== "markdown" || !d.path || !d.md || this.checkingMd || document.hidden) return;
+    this.checkingMd = true;
+    try {
+      const stamp = await this.platform.fileStamp(d.path);
+      if (!stamp || stamp === d.mdStamp) return;
+      const text = new TextDecoder().decode((await this.platform.readPath(d.path)).bytes);
+      d.mdStamp = stamp;
+      if (text === d.md.text) return;
+      await d.md.update(text);
+      if (this.active === d) await this.showMarkdown(d, true);
+    } catch {
+      /* the file is being saved or was moved; try again next time */
+    } finally {
+      this.checkingMd = false;
+    }
+  }
+
+  private paper(): Paper {
+    try {
+      const p = localStorage.getItem(PAPER_KEY);
+      if (p === "a4" || p === "letter") return p;
+    } catch {
+      /* default */
+    }
+    return paperForLocale(navigator.language);
+  }
+
+  private paperLabel(p = this.paper()) {
+    return p === "a4" ? "A4" : "US Letter";
+  }
+
+  private setPaper(p: Paper) {
+    try {
+      localStorage.setItem(PAPER_KEY, p);
+    } catch {
+      /* this session only */
+    }
+    this.layoutMarkdown();
+    this.renderStatus();
+  }
+
+  /** Make a PDF from a Markdown document. */
+  private async markdownToPdf(md: MdDocument, name: string): Promise<Uint8Array> {
+    if (!this.platform.htmlToPdf) throw new Error("Making PDFs from Markdown needs the Unacro desktop app.");
+    const base = name.replace(/\.[^.]+$/, "");
+    const paper = this.paper();
+    const raw = await this.platform.htmlToPdf(await md.printPage(paper, base), paper);
+    // Give the PDF a proper title (the system print sets none or a generic one).
+    try {
+      const pdf = await PDFDocument.load(raw, { updateMetadata: false });
+      pdf.setTitle(md.title ?? base);
+      pdf.setCreator("Unacro");
+      return await pdf.save();
+    } catch {
+      return raw;
+    }
+  }
+
+  /** A Markdown file (being combined or inserted) as PDF bytes. Uses the open tab's settings if it's open. */
+  private async markdownFileToPdf(file: OpenedFile): Promise<Uint8Array> {
+    const open = file.path ? this.docs.find((d) => d.path === file.path && d.md) : undefined;
+    if (open) return this.markdownToPdf(open.md!, open.name);
+    const md = await MdDocument.create(this.readBytes, file.path, new TextDecoder().decode(file.bytes));
+    try {
+      return await this.markdownToPdf(md, file.name);
+    } finally {
+      md.dispose();
+    }
+  }
+
+  /** Run a Markdown → PDF conversion with the Convert button disabled and a note about images. */
+  private async withConversion<T>(d: Doc, work: () => Promise<T>): Promise<T | null> {
+    if (this.converting || !d.md) return null;
+    this.converting = true;
+    this.renderToolbarState();
+    toast("Making the PDF…");
+    try {
+      return await work();
+    } catch (e: any) {
+      toast(`Couldn't make the PDF: ${e?.message ?? e}`, "error");
+      return null;
+    } finally {
+      this.converting = false;
+      this.renderToolbarState();
+    }
+  }
+
+  private imageNote(d: Doc): string {
+    const c = d.mdImages;
+    const notes: string[] = [];
+    if (c?.missing) notes.push(`${c.missing} missing image${c.missing === 1 ? " is" : "s are"} shown as placeholders`);
+    if (c?.remote && !d.md?.remoteAllowed) notes.push(`${c.remote} web image${c.remote === 1 ? " wasn't" : "s weren't"} loaded`);
+    return notes.length ? ` (${notes.join("; ")})` : "";
+  }
+
+  /** Convert → PDF: the PDF opens as a new, unsaved tab next to the Markdown file. */
+  async convertMarkdown(d: Doc) {
+    const bytes = await this.withConversion(d, () => this.markdownToPdf(d.md!, d.name));
+    if (!bytes) return;
+    try {
+      const name = replaceExt(d.name, "pdf");
+      const src = await Source.load(name, bytes);
+      this.sources.add(src);
+      const doc = this.newDoc(name, null, pagesForSource(src.id, src.pageCount), false, { nearPath: d.path });
+      this.activate(doc);
+      toast(`Made a ${src.pageCount}-page PDF${this.imageNote(d)}. Save to keep it.`);
+    } catch (e: any) {
+      toast(`Couldn't open the PDF: ${e?.message ?? e}`, "error");
+    }
+  }
+
+  /** Export as PDF…: ask where, then write the PDF straight there. */
+  async exportMarkdownPdf(d: Doc) {
+    if (d.kind !== "markdown") return;
+    const path = await this.platform.pickSavePath(replaceExt(d.name, "pdf"), "pdf", d.path);
+    if (!path) return;
+    const bytes = await this.withConversion(d, () => this.markdownToPdf(d.md!, d.name));
+    if (!bytes) return;
+    try {
+      await this.platform.write(path, bytes);
+      this.history.record(path, "pdf", false);
+      this.savedToast(`Exported ${this.platform.baseName(path)}${this.imageNote(d)}`, path);
+    } catch (e: any) {
+      toast(`Couldn't save: ${e?.message ?? e}`, "error");
+    }
+  }
+
   // ================================================================ convert
 
   private jpegQuality(): number {
@@ -1931,6 +2275,21 @@ export class App {
 
   private convertMenuItems(): MenuItem[] {
     const d = this.active;
+    if (d?.kind === "markdown") {
+      const paper = this.paper();
+      return [
+        { label: "PDF", disabled: this.converting, action: () => void this.convertMarkdown(d) },
+        { label: "Export as PDF…", disabled: this.converting, action: () => void this.exportMarkdownPdf(d) },
+        { separator: true, label: "" },
+        {
+          label: `Paper Size (${this.paperLabel(paper)})`,
+          submenu: (["a4", "letter"] as Paper[]).map((p) => ({
+            label: `${p === paper ? "✓ " : "   "}${this.paperLabel(p)}`,
+            action: () => this.setPaper(p),
+          })),
+        },
+      ];
+    }
     const many = (d?.pages.length ?? 0) > 1;
     const page = many ? "Current Page as " : "";
     const items: MenuItem[] = (["jpeg", "png", "tiff", "bmp"] as ImageFormat[]).map((f) => ({
@@ -1948,7 +2307,7 @@ export class App {
   }
 
   private showConvertMenu(anchor: HTMLElement) {
-    if (this.active?.kind !== "pages") return;
+    if (this.active?.kind !== "pages" && this.active?.kind !== "markdown") return;
     const r = anchor.getBoundingClientRect();
     openMenu(this.convertMenuItems(), r.left, r.bottom + 4);
   }
@@ -2745,7 +3104,7 @@ export class App {
   // ================================================================ library, tab limit, settings
 
   private historyKind(doc: Doc): HistoryKind {
-    return doc.kind === "model" ? "model" : doc.imageFormat ? "image" : "pdf";
+    return doc.kind === "model" ? "model" : doc.kind === "markdown" ? "markdown" : doc.imageFormat ? "image" : "pdf";
   }
 
   /** A small picture of the first page, for the Library. */
@@ -2797,6 +3156,7 @@ export class App {
       const i = this.docs.indexOf(d);
       this.docs.splice(i, 1);
       if (this.lastDoc === d) this.lastDoc = null;
+      d.md?.dispose();
       closed.push(d);
     }
     if (!closed.length) return;

@@ -8,7 +8,8 @@ export interface OpenedFile {
   bytes: Uint8Array;
 }
 
-import { ALL_EXTS, IMAGE_OPEN_EXTS, MODEL_EXTS, PDF_EXTS, extOf } from "./core/formats";
+import { ALL_EXTS, IMAGE_OPEN_EXTS, MARKDOWN_EXTS, MODEL_EXTS, PDF_EXTS, extOf } from "./core/formats";
+import type { Paper } from "./core/mdsource";
 
 /** What a save dialog is for. "image" offers image formats and PDF. */
 export type SaveKind = "pdf" | "md" | "image";
@@ -20,12 +21,14 @@ const OPEN_FILTERS: Record<OpenKind, { name: string; extensions: string[] }[]> =
     { name: "All supported files", extensions: ALL_EXTS },
     { name: "PDF", extensions: PDF_EXTS },
     { name: "Images", extensions: IMAGE_OPEN_EXTS },
+    { name: "Markdown", extensions: MARKDOWN_EXTS },
     { name: "3D models", extensions: MODEL_EXTS },
   ],
   pages: [
-    { name: "PDFs and images", extensions: [...PDF_EXTS, ...IMAGE_OPEN_EXTS] },
+    { name: "PDFs, images and Markdown", extensions: [...PDF_EXTS, ...IMAGE_OPEN_EXTS, ...MARKDOWN_EXTS] },
     { name: "PDF", extensions: PDF_EXTS },
     { name: "Images", extensions: IMAGE_OPEN_EXTS },
+    { name: "Markdown", extensions: MARKDOWN_EXTS },
   ],
 };
 
@@ -90,6 +93,12 @@ export interface Platform {
   pathsExist(paths: string[]): Promise<boolean[]>;
   /** Whether recent-file paths survive a restart. */
   persistentPaths: boolean;
+  /** A fingerprint of a file's size and modification time, or null if it can't be read. */
+  fileStamp(path: string): Promise<string | null>;
+  /** Print a self-contained HTML page to PDF with the system web view. Null if this platform can't. */
+  htmlToPdf: ((html: string, paper: Paper) => Promise<Uint8Array>) | null;
+  /** Open a web or mail link in the default app. */
+  openUrl(url: string): Promise<void>;
 }
 
 async function rgbaToPng(rgba: Uint8Array, width: number, height: number): Promise<Uint8Array> {
@@ -167,6 +176,12 @@ async function tauriPlatform(): Promise<Platform> {
       await invoke("data_delete", { name });
     },
     pathsExist: (paths) => invoke<boolean[]>("paths_exist", { paths }),
+    fileStamp: (path) => invoke<string | null>("file_stamp", { path }).catch(() => null),
+    async htmlToPdf(html, paper) {
+      const data = await invoke<ArrayBuffer>("html_to_pdf", { html, paper });
+      return new Uint8Array(data);
+    },
+    openUrl: (url) => opener.openUrl(url),
     writeClipboardText: (text) => clipboard.writeText(text),
     async writeClipboardImage(canvas) {
       const { Image } = await import("@tauri-apps/api/image");
@@ -338,6 +353,21 @@ function browserPlatform(): Platform {
     },
     async pathsExist(paths) {
       return paths.map((p) => handles.has(p));
+    },
+    async fileStamp(path) {
+      const h = handles.get(path);
+      if (!h) return null;
+      try {
+        const f = await h.getFile();
+        return `${f.size}-${f.lastModified}`;
+      } catch {
+        return null;
+      }
+    },
+    // A browser can't print to a file without asking; the desktop app can.
+    htmlToPdf: null,
+    async openUrl(url) {
+      window.open(url, "_blank", "noopener");
     },
     writeClipboardText: (text) => navigator.clipboard.writeText(text),
     async writeClipboardImage(canvas) {

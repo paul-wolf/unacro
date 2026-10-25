@@ -2,7 +2,7 @@
 // folder), plus the user's settings. See core/history.ts for the pure logic.
 
 import { MONTH_MS, pathKey, prune, record, type HistoryEntry, type HistoryFile, type HistoryKind } from "./core/history";
-import { extOf } from "./core/formats";
+import { MARKDOWN_EXTS, extOf } from "./core/formats";
 import type { Platform } from "./platform";
 
 // ------------------------------------------------------------------ settings
@@ -46,6 +46,7 @@ export function kindOfPath(path: string): HistoryKind {
   const ext = extOf(path);
   if (ext === "pdf") return "pdf";
   if (ext === "stl") return "model";
+  if (MARKDOWN_EXTS.includes(ext)) return "markdown";
   return "image";
 }
 

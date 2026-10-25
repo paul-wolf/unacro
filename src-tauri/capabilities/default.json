@@ -12,6 +12,8 @@
     "dialog:allow-open",
     "dialog:allow-save",
     "opener:allow-reveal-item-in-dir",
+    "opener:allow-open-url",
+    "opener:allow-default-urls",
     "clipboard-manager:allow-read-image",
     "clipboard-manager:allow-write-image",
     "clipboard-manager:allow-write-text"

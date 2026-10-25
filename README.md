@@ -1,12 +1,12 @@
 # Unacro
 
-**Un-Acrobat your PDFs.** Unacro is a small, fast, open-source viewer for PDFs, screenshots, images and STL models, with the everyday jobs built in: combine, reorder, sign, convert, and export to Markdown. Think macOS Preview, but on Linux too, and with file handling that always tells you where your file is. Linux first, also macOS and Windows. MIT licensed.
+**Un-Acrobat your PDFs.** Unacro is a small, fast, open-source viewer for PDFs, screenshots, images, Markdown documents and STL models, with the everyday jobs built in: combine, reorder, sign, convert, turn Markdown into PDF, and export PDFs to Markdown. Think macOS Preview, but on Linux too, and with file handling that always tells you where your file is. Linux first, also macOS and Windows. MIT licensed.
 
 See [GOALS.md](GOALS.md) for what Unacro is (and deliberately isn't).
 
 ## Features
 
-- **View**: PDFs, images (JPEG, PNG, GIF, HEIC, TIFF, BMP) and STL 3D models, with continuous scrolling, zoom, page thumbnails, text selection and find (`Ctrl+F`)
+- **View**: PDFs, images (JPEG, PNG, GIF, HEIC, TIFF, BMP), Markdown documents and STL 3D models, with continuous scrolling, zoom, page thumbnails, text selection and find (`Ctrl+F`)
 - **Screenshots**: New from Clipboard (`Ctrl+N`) opens the image on your clipboard as a new document. Mark it up, press `Ctrl+C`, and paste it anywhere, with no saving needed. A copied screenshot closes without a "Save changes?" prompt.
 - **Convert**: open any image or page as JPEG, PNG, TIFF or BMP (or images as a PDF) in a new tab, then save it next to the original. JPEG quality is set once (default 85%) under Convert → JPEG Quality, which shows the resulting file size. Saving an untouched image in its own format copies it byte for byte, so nothing is recompressed and its metadata survives.
 - **Crop**: drag a box (crop tool in the markup bar, or `C`), adjust it, press Enter. Works on images and PDF pages, with rotation and markup, and can be undone. "Remove Crop" is on the page's right-click menu.
@@ -17,8 +17,9 @@ See [GOALS.md](GOALS.md) for what Unacro is (and deliberately isn't).
 - **Organize**: drag to reorder, rotate, delete, multi-select with `Shift` / `Ctrl`, open a selection as a new document
 - **Sign**: draw your signature once (or import a photo/scan of it), then click to place it, drag to move, resize from the corner
 - **Markdown**: export or copy a document as Markdown, with headings, paragraphs and lists inferred from the layout
+- **Markdown to PDF**: a `.md` file opens rendered, as it will look on paper, and follows the file as you edit it elsewhere. Convert → PDF opens the PDF in a new tab (or Export as PDF… saves it straight away). Tables, task lists, syntax-highlighted code, and images: local ones always work (relative or absolute paths, spaces, SVG, WebP, TIFF, HEIC on macOS); images from the web load only when you click **Load Remote Images**. Paper is A4 or US Letter (from your locale, changeable under Convert). Combine accepts Markdown files too.
 - **3D models**: STL viewer with rotate, pan, zoom, size and triangle count
-- **Library**: every file you've opened in the last 6 months (configurable), as the first tab. View it as a recent list, a timeline (last 5 minutes, last hour, each hour of today, yesterday, each day of the week, then months), by folder, or by type (PDFs, screenshots, images, 3D). Search as you type, with thumbnails, "open" badges, and moved or deleted files greyed out. Open, show in Finder / file manager, copy the path, or remove an entry.
+- **Library**: every file you've opened in the last 6 months (configurable), as the first tab. View it as a recent list, a timeline (last 5 minutes, last hour, each hour of today, yesterday, each day of the week, then months), by folder, or by type (PDFs, screenshots, images, Markdown, 3D). Search as you type, with thumbnails, "open" badges, and moved or deleted files greyed out. Open, show in Finder / file manager, copy the path, or remove an entry.
 - **Go to File** (`Ctrl+P`): type a few letters of any open or recent file and press Enter.
 - **Stays light all day**: at most 12 files stay open (configurable in Settings, `Ctrl+,`). Opening more closes the tab you've used least recently, and a message offers to reopen it. Pinned tabs, tabs with unsaved changes, and new documents never close and don't count.
 - **Proper file handling**: Save, Save As (the document then lives at the new location), Save a Copy, no autosave, atomic writes, full path in the status bar (click it to open the containing folder, or copy it with the button next to it), a message after every save with "Show in Finder" / "Open Folder" and "Copy Path" buttons, "Open Containing Folder" and "Copy Path" on each tab's right-click menu, unsaved-changes prompts, recent files, one window with tabs
@@ -88,8 +89,8 @@ For quick UI work without the desktop shell, `npm run dev` serves the same UI at
 Tests:
 
 ```sh
-npm test                      # PDF building and Markdown conversion
-cd src-tauri && cargo test    # native file writing
+npm test                      # PDF building, Markdown conversion, Markdown paths
+cd src-tauri && cargo test    # native file writing and printing
 ```
 
 ## Releasing
@@ -112,14 +113,17 @@ The tag starts the [Release workflow](.github/workflows/release.yml). It builds 
 | Combining, rotating, signing, saving | [pdf-lib](https://pdf-lib.js.org) | MIT |
 | TIFF reading and writing | [UTIF.js](https://github.com/photopea/UTIF.js) | MIT |
 | 3D viewer (loaded only for STL files) | [three.js](https://threejs.org) | MIT |
+| Markdown (loaded only for Markdown files) | [markdown-it](https://github.com/markdown-it/markdown-it) | MIT |
+| Code highlighting in Markdown | [highlight.js](https://highlightjs.org) | BSD-3-Clause |
 | Callout text (screen, images and PDFs) | [Inter](https://rsms.me/inter/) font, embedded with [@pdf-lib/fontkit](https://github.com/Hopding/fontkit) | OFL-1.1 (font), MIT |
 
 The UI is plain TypeScript with no framework.
 
 - `src/core/`: the document model, PDF building (`build.ts`) and PDF-to-Markdown (`markdown.ts`). No DOM, unit-tested in Node.
 - `src/app.ts`: tabs, sidebar, viewer, signatures, menus, keyboard.
+- `src/mdview.ts` and `src/markdown.css`: Markdown rendering, HTML sanitizing, images, and the page that is printed to PDF.
 - `src/platform.ts`: everything that touches the operating system (desktop vs. browser).
-- `src-tauri/`: the native side. It only reads files, writes them atomically, and passes on files the operating system asks it to open.
+- `src-tauri/`: the native side. It reads files, writes them atomically, passes on files the operating system asks it to open, and prints Markdown pages to PDF with the system's own web view (`print.rs`: WKWebView on macOS, WebView2 on Windows, WebKitGTK on Linux).
 
 Images are opened as one-page documents (wrapped in an in-memory PDF), so every page feature works on them too. The original pixels are kept, and saving an edited image draws it again at full resolution with rotation and signatures applied. An unchanged image is never rewritten.
 
@@ -127,7 +131,7 @@ Edits are never applied to your file directly. A document is a list of page refe
 
 ## Privacy
 
-Unacro makes no network requests. Saved signatures, settings and the Library stay on your machine. The Library is a small `history.json` plus thumbnails in Unacro's data folder (`~/Library/Application Support/dev.unacro.app` on macOS, `~/.local/share/dev.unacro.app` on Linux). "Clear Library…" in Settings deletes it.
+Unacro makes no network requests on its own. The one exception is a Markdown document's web images, which load only after you click **Load Remote Images** for that document, and only from the addresses in it. Saved signatures, settings and the Library stay on your machine. The Library is a small `history.json` plus thumbnails in Unacro's data folder (`~/Library/Application Support/dev.unacro.app` on macOS, `~/.local/share/dev.unacro.app` on Linux). "Clear Library…" in Settings deletes it.
 
 ## License
 
