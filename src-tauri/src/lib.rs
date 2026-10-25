@@ -161,6 +161,13 @@ fn paths_exist(paths: Vec<String>) -> Vec<bool> {
 //    them as tabs, and the second process exits
 //  - macOS "open document" events (double-click, Open With, drop on the Dock icon)
 //
+// The single-instance plugin is deliberately not used on macOS. There, a
+// double-clicked file isn't on the command line: it arrives as an event after
+// launch. If a second copy of Unacro was started (for example the installed app
+// while a development build is running), the plugin would forward its empty
+// command line to the first copy and quit before that event arrived, losing the
+// file. macOS already routes documents to the running instance of an app.
+//
 // Files can arrive before the UI has loaded, so they wait in a queue until the UI
 // asks for them with `initial_paths`. After that they are sent as "open-files" events.
 
@@ -226,7 +233,7 @@ pub fn run() {
     let mut builder = tauri::Builder::default();
 
     // Must be the first plugin registered.
-    #[cfg(desktop)]
+    #[cfg(any(windows, target_os = "linux"))]
     {
         builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, cwd| {
             let paths = file_args(argv.into_iter().skip(1), Path::new(&cwd));

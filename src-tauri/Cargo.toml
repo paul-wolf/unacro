@@ -26,5 +26,7 @@ opt-level = "s"
 panic = "abort"
 strip = true
 
-[target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
+# Linux and Windows only: macOS already keeps one instance per app and sends
+# double-clicked files to it as "open document" events.
+[target.'cfg(any(windows, target_os = "linux"))'.dependencies]
 tauri-plugin-single-instance = "2"

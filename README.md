@@ -81,7 +81,7 @@ Installed builds register Unacro as an app that can open PDFs, images (JPEG, PNG
 - **macOS:** select a file of that type in Finder, press `⌘I`, choose Unacro under "Open with", then click "Change All…".
 - **Linux:** right-click a file, choose "Open With…" and pick Unacro (most file managers offer a "set as default" option there), or run e.g. `xdg-mime default unacro.desktop application/pdf image/png`.
 
-File associations only exist in an installed build (`npm run tauri build`), not in `npm run tauri dev`. On macOS, copy `src-tauri/target/release/bundle/macos/Unacro.app` to Applications.
+File associations only exist in an installed build (`npm run tauri build`), not in `npm run tauri dev`. On macOS, copy `src-tauri/target/release/bundle/macos/Unacro.app` to Applications. While `npm run tauri dev` is running, files you double-click go to the installed copy, which macOS treats as a separate app.
 
 For quick UI work without the desktop shell, `npm run dev` serves the same UI at http://localhost:1420 in a browser (Chromium recommended). In the browser, Save works through the browser's file picker or falls back to a download.
 
