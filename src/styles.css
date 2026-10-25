@@ -532,7 +532,7 @@ button { font: inherit; color: inherit; }
 .lib-none { color: var(--muted); padding: 20px 8px; }
 .lib-empty { max-width: 520px; margin: 12vh auto 0; text-align: center; color: var(--muted); }
 .lib-empty .brand { margin-bottom: 8px; }
-.library-tab { flex: 0 0 auto; min-width: 0; gap: 7px; padding-right: 14px; }
+.library-tab { flex: 0 0 auto; min-width: 0; gap: 7px; padding-right: 14px; border-right-color: var(--line); box-shadow: 1px 0 0 var(--line); z-index: 1; }
 .library-tab .icon { width: 15px; height: 15px; }
 .tab-pin { display: inline-flex; color: var(--accent); }
 .tab-pin .icon { width: 13px; height: 13px; }

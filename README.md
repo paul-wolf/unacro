@@ -19,7 +19,7 @@ See [GOALS.md](GOALS.md) for what Unacro is (and deliberately isn't).
 - **Markdown**: export or copy a document as Markdown, with headings, paragraphs and lists inferred from the layout
 - **Markdown to PDF**: a `.md` file opens rendered, as it will look on paper, and follows the file as you edit it elsewhere. Convert → PDF opens the PDF in a new tab (or Export as PDF… saves it straight away). Tables, task lists, syntax-highlighted code, and images: local ones always work (relative or absolute paths, spaces, SVG, WebP, TIFF, HEIC on macOS); images from the web load only when you click **Load Remote Images**. Paper is A4 or US Letter (from your locale, changeable under Convert). Combine accepts Markdown files too.
 - **3D models**: STL viewer with rotate, pan, zoom, size and triangle count
-- **Library**: every file you've opened in the last 6 months (configurable), as the first tab. View it as a recent list, a timeline (last 5 minutes, last hour, each hour of today, yesterday, each day of the week, then months), by folder, or by type (PDFs, screenshots, images, Markdown, 3D). Search as you type, with thumbnails, "open" badges, and moved or deleted files greyed out. Open, show in Finder / file manager, copy the path, or remove an entry.
+- **Library**: every file you've opened in the last 6 months (configurable), as the first tab, which stays in place however many tabs are open. View it as a recent list, a timeline (last 5 minutes, last hour, each hour of today, yesterday, each day of the week, then months), by folder, or by type (PDFs, screenshots, images, Markdown, 3D). Search as you type, with thumbnails, "open" badges, and moved or deleted files greyed out. Open, show in Finder / file manager, copy the path, or remove an entry.
 - **Go to File** (`Ctrl+P`): type a few letters of any open or recent file and press Enter.
 - **Stays light all day**: at most 12 files stay open (configurable in Settings, `Ctrl+,`). Opening more closes the tab you've used least recently, and a message offers to reopen it. Pinned tabs, tabs with unsaved changes, and new documents never close and don't count.
 - **Proper file handling**: Save, Save As (the document then lives at the new location), Save a Copy, no autosave, atomic writes, full path in the status bar (click it to open the containing folder, or copy it with the button next to it), a message after every save with "Show in Finder" / "Open Folder" and "Copy Path" buttons, "Open Containing Folder" and "Copy Path" on each tab's right-click menu, unsaved-changes prompts, recent files, one window with tabs
@@ -34,6 +34,7 @@ See [GOALS.md](GOALS.md) for what Unacro is (and deliberately isn't).
 | Settings | `Ctrl+,` |
 | Open / Save / Save As | `Ctrl+O` / `Ctrl+S` / `Ctrl+Shift+S` |
 | Close tab / switch tabs | `Ctrl+W` / `Ctrl+Tab`, `Ctrl+PageDown`, `Ctrl+PageUp` |
+| Close all tabs | `Ctrl+Alt+W` (`⌥⌘W` on macOS) |
 | Undo / Redo | `Ctrl+Z` / `Ctrl+Shift+Z` or `Ctrl+Y` |
 | Rotate right / left | `Ctrl+R` / `Ctrl+L` |
 | Delete selected pages | `Delete` (with the sidebar focused) |

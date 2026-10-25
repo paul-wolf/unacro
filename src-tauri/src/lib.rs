@@ -246,16 +246,16 @@ fn initial_paths(queue: State<'_, Mutex<OpenQueue>>) -> Vec<String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let mut builder = tauri::Builder::default();
+    let builder = tauri::Builder::default();
 
     // Must be the first plugin registered.
     #[cfg(any(windows, target_os = "linux"))]
-    {
-        builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, cwd| {
+    let builder = {
+        builder.plugin(tauri_plugin_single_instance::init(|app, argv, cwd| {
             let paths = file_args(argv.into_iter().skip(1), Path::new(&cwd));
             deliver(app, paths);
-        }));
-    }
+        }))
+    };
 
     builder
         .manage(Mutex::new(OpenQueue::default()))

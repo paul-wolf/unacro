@@ -108,6 +108,7 @@ interface PageEl {
 
 const MOD = isMac() ? "⌘" : "Ctrl+";
 const SHIFT = isMac() ? "⇧" : "Shift+";
+const ALT = isMac() ? "⌥" : "Alt+";
 const THUMB_W = 116;
 const THUMB_H = 150;
 const PAGE_GAP = 16;
@@ -305,7 +306,7 @@ export class App {
       }
     });
     this.tabs.addEventListener("dblclick", (e) => {
-      if (e.target === this.tabs) void this.openDialog();
+      if (e.target === this.tabs || (e.target as HTMLElement).classList?.contains("tab-strip")) void this.openDialog();
     });
 
     const workspace = h("main", { class: "workspace" }, this.sidebar, this.viewer, this.modelHost, this.mdHost, this.library.el);
@@ -551,6 +552,12 @@ export class App {
 
   private async closeOthers(keep: Doc) {
     for (const d of [...this.docs]) if (d !== keep && !(await this.closeDoc(d))) return;
+  }
+
+  /** Close every tab (asking about unsaved changes as usual) and show the Library. */
+  async closeAll() {
+    for (const d of [...this.docs]) if (!(await this.closeDoc(d))) return;
+    this.showLibrary();
   }
 
   private async confirmQuit(): Promise<boolean> {
@@ -1217,8 +1224,9 @@ export class App {
           );
         } }, icon("chevron"))
       : null;
-    const strip = h("div", { class: "tab-strip" }, libraryTab, ...items);
-    this.tabs.replaceChildren(strip, ...(listBtn ? [listBtn] : []));
+    // The Library tab stays put at the left; only the document tabs scroll.
+    const strip = h("div", { class: "tab-strip" }, ...items);
+    this.tabs.replaceChildren(libraryTab, strip, ...(listBtn ? [listBtn] : []));
     const activeTab = strip.querySelector(".tab.active");
     activeTab?.scrollIntoView({ block: "nearest", inline: "nearest" });
   }
@@ -1773,6 +1781,7 @@ export class App {
       ...(this.platform.canReveal ? [{ label: "Open Containing Folder", disabled: !d?.path, action: () => d && this.revealDoc(d) }] : []),
       { label: "Copy Path", disabled: !d?.path, action: () => d?.path && this.copyPath(d.path) },
       { label: "Close", shortcut: `${MOD}W`, disabled: !d, action: () => d && void this.closeDoc(d) },
+      { label: "Close All", shortcut: `${ALT}${MOD}W`, disabled: !this.docs.length, action: () => void this.closeAll() },
       { separator: true, label: "" },
       { label: "Settings…", shortcut: `${MOD},`, action: () => void this.settingsDialog() },
     ];
@@ -1832,6 +1841,7 @@ export class App {
         { separator: true, label: "" },
         { label: "Close", action: () => void this.closeDoc(d) },
         { label: "Close Other Tabs", disabled: this.docs.length < 2, action: () => void this.closeOthers(d) },
+        { label: "Close All Tabs", shortcut: `${ALT}${MOD}W`, action: () => void this.closeAll() },
       ],
       x,
       y,
@@ -1904,7 +1914,8 @@ export class App {
       return;
     }
     const mod = isMac() ? e.metaKey : e.ctrlKey;
-    const k = e.key.toLowerCase();
+    // With Option held, macOS changes e.key (⌥W types "∑"), so use the physical key for letters.
+    const k = e.altKey && /^Key[A-Z]$/.test(e.code) ? e.code.slice(3).toLowerCase() : e.key.toLowerCase();
     const inInput = e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement;
 
     if (e.key === "Escape") {
@@ -1929,7 +1940,7 @@ export class App {
         h: () => e.shiftKey && this.toggleLibrary(),
         n: () => void this.newFromClipboard(),
         s: () => void (e.shiftKey ? this.saveAs() : this.save()),
-        w: () => this.active && void this.closeDoc(this.active),
+        w: () => (e.altKey ? void this.closeAll() : this.active && void this.closeDoc(this.active)),
         f: () => {
           if (!this.active) return this.library.focusSearch();
           this.searchInput.focus();
